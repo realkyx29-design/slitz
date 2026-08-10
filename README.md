@@ -84,8 +84,9 @@ TitanBot offers a complete suite of tools for Discord server management and comm
   
 ### Music
 - **24/7 Mode** - Play music 24/7
-- **Interative Button System** - Manage music through buttons
-- **Supports EVERY platform** - Supports spotify, deezer, youtube, apple music
+- **Interactive Button System** - Manage music through buttons
+- **YouTube Support** - Play YouTube videos, Shorts, and playlists by link, or search YouTube / YouTube Music
+- **Multi-Platform** - Also plays spotify, deezer, soundcloud, and apple music links
   
 </td>
 </tr>
@@ -141,7 +142,7 @@ Music uses [Lavalink v4](https://github.com/lavalink-devs/Lavalink) via [Riffy](
    ```
    Remove or rename `lavalink/nodes.json` so the bot falls back to those env vars.
 3. Override nodes inline with `LAVALINK_NODES` (JSON array) or point at another file with `LAVALINK_NODES_FILE`.
-4. Use `/play <song>` from a voice channel, or `/join` to connect without playing. Prefix shortcuts: `join`, `np`, `leave`, `pause`, `resume`, `skip`, `stop`, `volume <0-100>`, or `music <subcommand>`. Use `/nowplaying` and `/queue` for status; `/music` for loop, shuffle, seek, and other controls.
+4. Use `/play <song>` from a voice channel, or `/join` to connect without playing. Paste any **YouTube** link (`youtube.com/watch`, `youtu.be`, `music.youtube.com`, Shorts, and playlists all work) and it plays directly. For searches, `/play` defaults to YouTube Music; use the `source` option to search **YouTube**, Spotify, SoundCloud, or Deezer instead (or type a prefix like `ytsearch:` / `ytmsearch:` directly into the query). Prefix shortcuts: `join`, `np`, `leave`, `pause`, `resume`, `skip`, `stop`, `volume <0-100>`, or `music <subcommand>`. Use `/nowplaying` and `/queue` for status; `/music` for loop, shuffle, seek, and other controls.
 
 ### Using GitHub Container Registry
 

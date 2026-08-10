@@ -1,6 +1,7 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { createEmbed } from '../../utils/embeds.js';
 import { getPaginationRow } from '../../utils/components.js';
+import { getTrackSourceName } from './sources.js';
 
 const QUEUE_PAGE_SIZE = 10;
 
@@ -57,9 +58,10 @@ export function buildNowPlayingEmbed(track, player, guildData) {
 
     const position = formatDuration(player?.position || 0);
     const duration = formatDuration(track?.info?.length || 0);
+    const source = getTrackSourceName(track);
 
     return createEmbed({
-        title: 'Now Playing',
+        title: source ? `Now Playing (${source})` : 'Now Playing',
         description: track?.info?.title || 'Unknown track',
         color: 'primary',
         fields: [
