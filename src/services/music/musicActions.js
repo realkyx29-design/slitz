@@ -11,8 +11,12 @@ import {
     getQueuePageSize,
 } from './musicEmbeds.js';
 import { refreshPlayerMessage } from './playerHandler.js';
-
-const YOUTUBE_URL_PATTERN = /(?:youtube\.com|youtu\.be)/i;
+import {
+    getSourceName,
+    getTrackSourceName,
+    normalizeQueryUrl,
+    parseSearchPrefix,
+} from './sources.js';
 
 export function getPlayer(client, guildId) {
     return client.riffy?.players?.get(guildId) || null;
@@ -117,19 +121,21 @@ export async function joinVoiceChannel(client, interaction) {
     );
 }
 
-export async function playQuery(client, interaction, query) {
-    if (YOUTUBE_URL_PATTERN.test(query)) {
-        throw new TitanBotError(
-            'YouTube URL blocked',
-            ErrorTypes.USER_INPUT,
-            'YouTube links are not supported. Try a song name instead.',
-        );
-    }
+export async function playQuery(client, interaction, query, source = null) {
+    // Support both the /play `source` option and Lavalink prefixes typed
+    // directly into the query (e.g. "ytsearch:...").
+    const { source: prefixSource, query: unprefixedQuery } = parseSearchPrefix(query);
+    const effectiveSource = prefixSource || (source && source !== 'auto' ? source : null);
+
+    const identifier = normalizeQueryUrl(unprefixedQuery);
+    const isUrlQuery = /^https?:\/\//i.test(identifier);
 
     const { player, guildData } = await ensurePlayer(client, interaction);
 
     const result = await client.riffy.resolve({
-        query,
+        query: identifier,
+        // Only used for searches — URLs are resolved directly by Lavalink.
+        source: isUrlQuery ? null : effectiveSource,
         requester: interaction.user,
     });
 
@@ -153,10 +159,13 @@ export async function playQuery(client, interaction, query) {
             player.play();
         }
 
+        const playlistSource = getSourceName(identifier) || (isUrlQuery ? 'Link' : null);
+        const sourceLine = playlistSource ? `\nSource: **${playlistSource}**` : '';
+
         return {
             embed: successEmbed(
                 'Playlist Added',
-                `**${playlistInfo?.name || 'Playlist'}**\nAdded ${added} of ${tracks.length} track(s).${skipped ? ` Skipped ${skipped} duplicate(s).` : ''}`,
+                `**${playlistInfo?.name || 'Playlist'}**\nAdded ${added} of ${tracks.length} track(s).${skipped ? ` Skipped ${skipped} duplicate(s).` : ''}${sourceLine}`,
             ),
         };
     }
@@ -190,14 +199,29 @@ export async function playQuery(client, interaction, query) {
             player.play();
         }
 
+        const trackSource = getTrackSourceName(track);
+        const sourceLine = trackSource ? `\nSource: **${trackSource}**` : '';
+
         return {
             embed: successEmbed(
                 willPlayNow ? 'Now Playing' : 'Track Added',
                 willPlayNow
-                    ? `**${track.info.title}**\n${track.info.author}`
-                    : `**${track.info.title}**\n${track.info.author}\nPosition: #${queuePosition} in queue`,
+                    ? `**${track.info.title}**\n${track.info.author}${sourceLine}`
+                    : `**${track.info.title}**\n${track.info.author}\nPosition: #${queuePosition} in queue${sourceLine}`,
             ),
         };
+    }
+
+    const normalizedLoadType = String(loadType || '').toUpperCase();
+    if (normalizedLoadType === 'LOAD_FAILED') {
+        throw new TitanBotError(
+            'Load failed',
+            ErrorTypes.USER_INPUT,
+            'Could not load that. The link may be invalid, private, or unavailable.',
+        );
+    }
+    if (normalizedLoadType === 'NO_MATCHES' || normalizedLoadType === 'EMPTY') {
+        throw new TitanBotError('No results', ErrorTypes.USER_INPUT, 'No results found for that query.');
     }
 
     throw new TitanBotError('No results', ErrorTypes.USER_INPUT, `No results found. (loadType: ${loadType})`);
