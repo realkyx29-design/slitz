@@ -24,7 +24,7 @@ export const botConfig = {
     activities: [
       {
         name: "Custom Status", // required by Discord API, not shown in the client
-        state: "Dario is a bitch",     // this is what people actually see
+        state: "Owned by Gstar Studios & larpingmemecoin",     // this is what people actually see
         type: 4,               // Custom
       },
     ],
