@@ -149,9 +149,4 @@ async function runSetup(interaction, client) {
             await handleInteractionError(interaction, error, { commandName: 'ticket_setup', source: 'ticket_setup_command' });
         }
     }
-}
-                }
-            }
-        }
-    }
 };
