@@ -87,6 +87,8 @@ export const GuildConfigSchema = z
     birthdayChannelId: z.string().nullable().optional(),
     premiumRoleId: z.string().nullable().optional(),
     logIgnore: LogIgnoreSchema.optional(),
+    ticketAiEnabled: z.boolean().optional(),
+    ticketAiNotifyUserId: z.string().nullable().optional(),
     disabledCommands: z.record(z.boolean()).optional(),
     disabledCategories: z.record(z.boolean()).optional(),
     logging: LoggingConfigSchema.optional(),

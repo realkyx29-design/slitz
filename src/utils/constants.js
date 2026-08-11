@@ -30,6 +30,8 @@ export const DEFAULT_GUILD_CONFIG = {
     adminRole: null,
     welcomeChannel: null,
     autoRole: null,
+    ticketAiEnabled: true,
+    ticketAiNotifyUserId: null,
     logging: {
         enabled: false,
         channels: { audit: null, applications: null, reports: null },

@@ -1,7 +1,8 @@
 import { getColor } from '../../config/bot.js';
 import { SlashCommandBuilder, PermissionFlagsBits, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } from 'discord.js';
 import { createEmbed, successEmbed } from '../../utils/embeds.js';
-import { getGuildConfig, setGuildConfig } from '../../services/config/guildConfig.js';
+import { getGuildConfig, setGuildConfig, updateGuildConfig } from '../../services/config/guildConfig.js';
+import { normalizeAiConfig, isAiConfigured, resolveHumanNotifyUserId } from '../../services/ticketAI/aiSupportService.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 import { logger } from '../../utils/logger.js';
 import { handleInteractionError, replyUserError, ErrorTypes } from '../../utils/errorHandler.js';
@@ -38,6 +39,13 @@ export default {
                 )
                 .addBooleanOption((option) => option.setName('dm_on_close').setDescription('Send DM to user when their ticket is closed (default: true)').setRequired(false)),
         )
+        .addSubcommand((subcommand) =>
+            subcommand
+                .setName('ai')
+                .setDescription('Configure the ticket AI assistant and the "Request Human" escalation.')
+                .addBooleanOption((option) => option.setName('enabled').setDescription('Let the AI assistant answer basic questions in tickets').setRequired(true))
+                .addUserOption((option) => option.setName('notify_user').setDescription('User to ping when someone requests a human (optional override)').setRequired(false)),
+        )
         .addSubcommand((subcommand) => subcommand.setName('dashboard').setDescription('Open the interactive ticket system dashboard')),
     category: 'ticket',
 
@@ -56,10 +64,55 @@ export default {
             return ticketConfig.execute(interaction, config, client);
         }
 
+        if (subcommand === 'ai') {
+            return runAiConfig(interaction, client);
+        }
+
         if (subcommand === 'setup') {
             return runSetup(interaction, client);
         }
     },
+};
+
+async function runAiConfig(interaction, client) {
+    const enabled = interaction.options.getBoolean('enabled', true);
+    const notifyUser = interaction.options.getUser('notify_user');
+
+    const updates = { ticketAiEnabled: enabled };
+    if (notifyUser) {
+        updates.ticketAiNotifyUserId = notifyUser.id;
+    }
+
+    await updateGuildConfig(client, interaction.guildId, updates);
+
+    const savedConfig = await getGuildConfig(client, interaction.guildId);
+    const aiConfig = normalizeAiConfig();
+    const effectiveNotifyUserId = resolveHumanNotifyUserId(savedConfig);
+
+    const lines = [
+        `**AI replies in tickets:** ${enabled ? '✅ Enabled' : '🚫 Disabled'}`,
+        `**Request Human ping:** <@${effectiveNotifyUserId}>`,
+    ];
+
+    if (enabled && !isAiConfigured()) {
+        lines.push('', '⚠️ **The AI cannot reply yet** — no `AI_API_KEY` is configured in the bot environment. Add one and restart the bot to activate the assistant. The "Request Human" button will still work.');
+    } else if (enabled) {
+        lines.push('', `**Model:** \`${aiConfig.model}\` — the assistant only answers questions in open tickets and stops when a human is requested.`);
+    } else {
+        lines.push('', 'New tickets will no longer show the AI/Request Human controls. Existing tickets keep their current controls.');
+    }
+
+    await InteractionHelper.safeEditReply(interaction, {
+        embeds: [successEmbed('Ticket AI Settings Updated', lines.join('\n'))],
+    });
+
+    logger.info('Ticket AI configuration updated', {
+        guildId: interaction.guildId,
+        userId: interaction.user.id,
+        enabled,
+        notifyUserId: notifyUser?.id ?? null,
+        commandName: 'ticket_ai',
+    });
 };
 
 async function runSetup(interaction, client) {
