@@ -13,12 +13,12 @@ import { getServerCounters, saveServerCounters, updateCounter } from './services
 import { logger, startupLog, shutdownLog } from './utils/logger.js';
 import { checkBirthdays } from './services/birthdayService.js';
 import { checkGiveaways } from './services/giveawayService.js';
-import { getAllStatuses } from './services/statusService.js';
+import { getApiStatusMonitor } from './services/apiStatusMonitor.js';
+import { createApiStatusRouter } from './http/apiStatusRoutes.js';
 import { loadCommands, registerCommands as registerSlashCommands } from './handlers/loaders/commandLoader.js';
 import { runSafeTask, handleTaskError, ErrorCodes } from './utils/errorHandler.js';
 import { initializeMusic } from './services/music/riffySetup.js';
 import { shutdownMusic } from './services/music/playerHandler.js';
-import pkg from '../package.json' with { type: 'json' };
 import { EXPECTED_SCHEMA_VERSION, EXPECTED_SCHEMA_LABEL } from './config/database/schemaVersion.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -122,8 +122,9 @@ class TitanBot extends Client {
     const maxPortRetryAttempts = Number(process.env.PORT_RETRY_ATTEMPTS || 5);
     const host = process.env.WEB_HOST || '0.0.0.0';
     const corsOrigin = this.config.api?.cors?.origin || '*';
+    const statusMonitor = getApiStatusMonitor(this);
 
-    // Serve static assets (status page, banner image, etc.)
+    // Serve the status dashboard and its static assets.
     app.use(express.static(PUBLIC_DIR, {
       index: false,
       maxAge: '5m',
@@ -187,22 +188,7 @@ class TitanBot extends Client {
       res.status(200).json(status);
     });
 
-    app.get('/api/status', async (req, res) => {
-      try {
-        const result = await getAllStatuses(this);
-        res.status(200).json(result);
-      } catch (error) {
-        logger.error('Status endpoint error:', error);
-        res.status(500).json({
-          services: [
-            { name: 'Bot API', status: 'degraded', icon: '🚦', detail: 'Status check failed', ping: null, error: error.message },
-          ],
-          summary: { overall: 'degraded', total: 1, operational: 0, degraded: 1, offline: 0 },
-          timestamp: new Date().toISOString(),
-          checkDurationMs: 0,
-        });
-      }
-    });
+    app.use('/api', createApiStatusRouter({ monitor: statusMonitor, logger }));
 
     app.get('/ready', (req, res) => {
       const dbStatus = this.db?.getStatus?.() || { isDegraded: true, connectionType: 'none' };
@@ -232,20 +218,6 @@ class TitanBot extends Client {
         ready: false,
         reason: !this.isReady() ? 'Bot not Ready' : 'Database degraded',
         metrics,
-      });
-    });
-
-    app.get('/api', (req, res) => {
-      res.status(200).json({
-        name: 'Slitz',
-        message: 'Slitz System Online',
-        version: pkg.version,
-        timestamp: new Date().toISOString(),
-        endpoints: {
-          health: '/health',
-          ready: '/ready',
-          status: '/api/status',
-        },
       });
     });
 
