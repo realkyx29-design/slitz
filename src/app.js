@@ -1,4 +1,6 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client, Collection, GatewayIntentBits } from 'discord.js';
 import { REST } from '@discordjs/rest';
 import express from 'express';
@@ -11,12 +13,17 @@ import { getServerCounters, saveServerCounters, updateCounter } from './services
 import { logger, startupLog, shutdownLog } from './utils/logger.js';
 import { checkBirthdays } from './services/birthdayService.js';
 import { checkGiveaways } from './services/giveawayService.js';
+import { getAllStatuses } from './services/statusService.js';
 import { loadCommands, registerCommands as registerSlashCommands } from './handlers/loaders/commandLoader.js';
 import { runSafeTask, handleTaskError, ErrorCodes } from './utils/errorHandler.js';
 import { initializeMusic } from './services/music/riffySetup.js';
 import { shutdownMusic } from './services/music/playerHandler.js';
 import pkg from '../package.json' with { type: 'json' };
 import { EXPECTED_SCHEMA_VERSION, EXPECTED_SCHEMA_LABEL } from './config/database/schemaVersion.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 
 class TitanBot extends Client {
   constructor() {
@@ -115,6 +122,15 @@ class TitanBot extends Client {
     const maxPortRetryAttempts = Number(process.env.PORT_RETRY_ATTEMPTS || 5);
     const host = process.env.WEB_HOST || '0.0.0.0';
     const corsOrigin = this.config.api?.cors?.origin || '*';
+
+    // Serve static assets (status page, banner image, etc.)
+    app.use(express.static(PUBLIC_DIR, {
+      index: false,
+      maxAge: '5m',
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+      },
+    }));
     
     app.use((req, res, next) => {
       const allowedOrigins = Array.isArray(corsOrigin) ? corsOrigin : [corsOrigin];
@@ -171,6 +187,23 @@ class TitanBot extends Client {
       res.status(200).json(status);
     });
 
+    app.get('/api/status', async (req, res) => {
+      try {
+        const result = await getAllStatuses(this);
+        res.status(200).json(result);
+      } catch (error) {
+        logger.error('Status endpoint error:', error);
+        res.status(500).json({
+          services: [
+            { name: 'Bot API', status: 'degraded', icon: '🚦', detail: 'Status check failed', ping: null, error: error.message },
+          ],
+          summary: { overall: 'degraded', total: 1, operational: 0, degraded: 1, offline: 0 },
+          timestamp: new Date().toISOString(),
+          checkDurationMs: 0,
+        });
+      }
+    });
+
     app.get('/ready', (req, res) => {
       const dbStatus = this.db?.getStatus?.() || { isDegraded: true, connectionType: 'none' };
       const isReady = this.isReady() && !dbStatus.isDegraded;
@@ -202,12 +235,22 @@ class TitanBot extends Client {
       });
     });
 
-    app.get('/', (req, res) => {
-      res.status(200).json({ 
-        message: 'TitanBot System Online',
+    app.get('/api', (req, res) => {
+      res.status(200).json({
+        name: 'Slitz',
+        message: 'Slitz System Online',
         version: pkg.version,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        endpoints: {
+          health: '/health',
+          ready: '/ready',
+          status: '/api/status',
+        },
       });
+    });
+
+    app.get('/', (req, res) => {
+      res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
     });
 
     const startServer = (port, attempt = 0) => {
