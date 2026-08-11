@@ -153,7 +153,7 @@ export async function reconcileReactionRolePanelHealth(client) {
                 } else if (panelStatus.reason === 'panel_deleted') {
                     summary.deletedPanels += 1;
                     logger.warn(
-                        `Reaction role panel deleted for guild ${guild.id} — repost from /reactroles dashboard`,
+                        `Reaction role panel deleted for guild ${guild.id} — repost from /reaction-roles dashboard`,
                     );
                 }
             }

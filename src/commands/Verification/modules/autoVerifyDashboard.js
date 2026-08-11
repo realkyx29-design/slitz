@@ -161,7 +161,7 @@ export default {
                     embeds: [
                         new EmbedBuilder()
                             .setTitle('🤖 Auto-Verification Dashboard')
-                            .setDescription(`Auto-verification is not yet configured.${blockingText}\n\nUse \`/autoverify setup\` to configure it.`)
+                            .setDescription(`Auto-verification is not yet configured.${blockingText}\n\nUse \`/auto-verify setup\` to configure it.`)
                             .setColor(getColor('warning'))
                             .setFooter({ text: 'Dashboard closes after 10 minutes of inactivity' })
                             .setTimestamp()
