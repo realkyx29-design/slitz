@@ -13,6 +13,7 @@ import { enforceAbuseProtection, formatCooldownDuration } from '../utils/abusePr
 import { createEmbed } from '../utils/embeds.js';
 import { isCommandEnabled } from '../services/commandAccessService.js';
 import { handleHoneypotMessage } from '../services/honeypotService.js';
+import { handleTicketAiMessage } from '../services/ticketAI/aiSupportService.js';
 import {
   getCountingGameConfig,
   saveCountingGameConfig,
@@ -42,6 +43,10 @@ export default {
       if (countingProcessed) {
         return;
       }
+
+      // AI assistant: answers basic questions in open ticket channels.
+      // No-ops everywhere else (and never acts on anything — reply text only).
+      await handleTicketAiMessage(message, client);
 
       await handlePrefixCommand(message, client);
 

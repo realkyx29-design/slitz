@@ -17,6 +17,7 @@ import { logTicketEvent } from '../utils/ticket/ticketLogging.js';
 import { createError, ErrorTypes } from '../utils/errorHandler.js';
 import { ensureTypedServiceError, wrapServiceBoundary } from '../utils/serviceErrorBoundary.js';
 import { PRIORITY_MAP } from '../utils/helpers.js';
+import { isAiActiveForGuild, resolveHumanNotifyUserId, clearTicketAiState } from './ticketAI/aiSupportService.js';
 const TICKET_DELETE_DELAY_MS = 3000;
 const TICKET_DELETE_DELAY_SECONDS = Math.floor(TICKET_DELETE_DELAY_MS / 1000);
 const TICKET_SERVICE = 'ticketService';
@@ -49,8 +50,13 @@ function rethrowTicketError(error, operation, userMessage, context = {}) {
 
 
 
-function buildTicketControlRow({ claimedBy = null } = {}) {
-  return new ActionRowBuilder().addComponents(
+export function buildTicketControlRows({
+  claimedBy = null,
+  enablePriority = false,
+  showAiControls = false,
+  humanRequested = false,
+} = {}) {
+  const controlRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('ticket_claim')
       .setLabel(claimedBy ? 'Claimed' : 'Claim')
@@ -68,6 +74,36 @@ function buildTicketControlRow({ claimedBy = null } = {}) {
       .setStyle(ButtonStyle.Danger)
       .setEmoji('🔒'),
   );
+
+  if (showAiControls) {
+    controlRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId('ticket_request_human')
+        .setLabel(humanRequested ? 'Human Requested' : 'Request Human')
+        .setStyle(humanRequested ? ButtonStyle.Secondary : ButtonStyle.Success)
+        .setEmoji('🧑‍💼')
+        .setDisabled(humanRequested)
+    );
+  }
+
+  const rows = [controlRow];
+
+  if (enablePriority) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('ticket_priority:low')
+        .setLabel('Low')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🔵'),
+      new ButtonBuilder()
+        .setCustomId('ticket_priority:high')
+        .setLabel('High')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('🔴')
+    ));
+  }
+
+  return rows;
 }
 
 export const getUserTicketCount = wrapServiceBoundary(async function getUserTicketCount(guildId, userId) {
@@ -166,15 +202,22 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
       claimedBy: null,
       priority: priority || 'none',
       reason,
+      humanRequested: false,
+      aiReplyCount: 0,
     };
-    
+
     await saveTicketData(guild.id, channel.id, ticketData);
-    
+
     const priorityInfo = PRIORITY_MAP[priority] || PRIORITY_MAP.none;
-    
+
+    const showAiControls = isAiActiveForGuild(config);
+    const aiHint = showAiControls
+      ? '\n\n🤖 Our AI assistant answers basic questions here automatically. Need a real person? Press **🧑‍💼 Request Human** anytime.'
+      : '';
+
     const embed = createEmbed({
       title: `Ticket #${ticketNumber}`,
-      description: `${member.toString()}, thanks for creating a ticket!\n\n**Reason:** ${reason}\n**Priority:** ${priorityInfo.emoji} ${priorityInfo.label}`,
+      description: `${member.toString()}, thanks for creating a ticket!\n\n**Reason:** ${reason}\n**Priority:** ${priorityInfo.emoji} ${priorityInfo.label}${aiHint}`,
       color: priorityInfo.color,
       fields: [
         { name: 'Status', value: '🟢 Open', inline: true },
@@ -182,31 +225,19 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
         { name: 'Created', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true },
       ],
     });
-    
-    const row = buildTicketControlRow();
-    
-    if (ticketConfig.enablePriority) {
-      row.addComponents(
-        new ButtonBuilder()
-          .setCustomId('ticket_priority:low')
-          .setLabel('Low')
-          .setStyle(ButtonStyle.Secondary)
-          .setEmoji('🔵'),
-        new ButtonBuilder()
-          .setCustomId('ticket_priority:high')
-          .setLabel('High')
-          .setStyle(ButtonStyle.Danger)
-          .setEmoji('🔴')
-      );
-    }
-    
+
+    const rows = buildTicketControlRows({
+      enablePriority: Boolean(ticketConfig.enablePriority),
+      showAiControls,
+    });
+
     const staffMention = config.ticketStaffRoleId ? ` <@&${config.ticketStaffRoleId}>` : '';
     const messageContent = `${member.toString()}${staffMention}`;
-    
-    const ticketMessage = await channel.send({ 
+
+    const ticketMessage = await channel.send({
       content: messageContent,
       embeds: [embed],
-      components: [row] 
+      components: rows
     });
 
     await ticketMessage.pin().catch(() => {});
@@ -421,7 +452,7 @@ components: []
 export async function claimTicket(channel, claimer) {
   try {
     const ticketData = requireTicket(await getTicketData(channel.guild.id, channel.id), channel);
-    
+
     if (ticketData.claimedBy) {
       ticketUserError(
         'Ticket already claimed',
@@ -430,31 +461,38 @@ export async function claimTicket(channel, claimer) {
         { channelId: channel.id, claimedBy: ticketData.claimedBy, operation: 'claimTicket' }
       );
     }
-    
+
+    const config = await getGuildConfig(channel.client, channel.guild.id);
+
     ticketData.claimedBy = claimer.id;
     ticketData.claimedAt = new Date().toISOString();
-    
+
     await saveTicketData(channel.guild.id, channel.id, ticketData);
-    
+
     const messages = await channel.messages.fetch();
-    const ticketMessage = messages.find(m => 
-      m.embeds.length > 0 && 
+    const ticketMessage = messages.find(m =>
+      m.embeds.length > 0 &&
       m.embeds[0].title?.startsWith('Ticket #')
     );
-    
+
     if (ticketMessage) {
       const embed = ticketMessage.embeds[0];
       const claimedField = embed.fields?.find(f => f.name === 'Claimed By');
-      
+
       if (claimedField) {
         claimedField.value = claimer.toString();
       }
-      
-      const row = buildTicketControlRow({ claimedBy: claimer.id });
-      
-      await ticketMessage.edit({ 
+
+      const rows = buildTicketControlRows({
+        claimedBy: claimer.id,
+        enablePriority: Boolean(config.tickets?.enablePriority),
+        showAiControls: isAiActiveForGuild(config),
+        humanRequested: Boolean(ticketData.humanRequested),
+      });
+
+      await ticketMessage.edit({
         embeds: [embed],
-        components: [row] 
+        components: rows
       });
     }
     
@@ -502,6 +540,100 @@ export async function claimTicket(channel, claimer) {
     
   } catch (error) {
     rethrowTicketError(error, 'claimTicket', 'Failed to claim ticket. Please try again in a moment.', { guildId: channel?.guild?.id, channelId: channel?.id, claimerId: claimer?.id });
+  }
+}
+
+export async function requestHumanSupport(channel, requester) {
+  try {
+    const ticketData = requireTicket(await getTicketData(channel.guild.id, channel.id), channel);
+
+    if (ticketData.humanRequested) {
+      ticketUserError(
+        'Human support already requested',
+        'A human has already been requested for this ticket. Staff have been notified — thanks for your patience!',
+        ErrorTypes.VALIDATION,
+        { channelId: channel.id, operation: 'requestHumanSupport' }
+      );
+    }
+
+    if (ticketData.status !== 'open') {
+      ticketUserError(
+        'Ticket is not open',
+        'Human support can only be requested while a ticket is open.',
+        ErrorTypes.VALIDATION,
+        { channelId: channel.id, operation: 'requestHumanSupport' }
+      );
+    }
+
+    const config = await getGuildConfig(channel.client, channel.guild.id);
+    const notifyUserId = resolveHumanNotifyUserId(config);
+
+    ticketData.humanRequested = true;
+    ticketData.humanRequestedBy = requester.id;
+    ticketData.humanRequestedAt = new Date().toISOString();
+
+    await saveTicketData(channel.guild.id, channel.id, ticketData);
+
+    // Reflect the escalation on the pinned control message (Request Human becomes disabled).
+    try {
+      const messages = await channel.messages.fetch();
+      const ticketMessage = messages.find(m =>
+        m.embeds.length > 0 &&
+        m.embeds[0].title?.startsWith('Ticket #')
+      );
+
+      if (ticketMessage) {
+        // The button was clicked, so AI controls exist on this message —
+        // keep them visible but locked into the "requested" state.
+        const rows = buildTicketControlRows({
+          claimedBy: ticketData.claimedBy,
+          enablePriority: Boolean(config.tickets?.enablePriority),
+          showAiControls: true,
+          humanRequested: true,
+        });
+        await ticketMessage.edit({ components: rows });
+      }
+    } catch (editError) {
+      logger.warn(`Could not update ticket controls after human request: ${editError.message}`);
+    }
+
+    const escalationEmbed = createEmbed({
+      title: '🧑‍💼 Human Support Requested',
+      description: `${requester} has requested help from a human staff member.\n\nThe AI assistant has stopped replying in this ticket. A staff member will be with you as soon as possible.`,
+      color: '#2ecc71',
+      fields: [
+        { name: 'Requested By', value: `<@${requester.id}>`, inline: true },
+        { name: 'Requested At', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true },
+      ],
+      footer: { text: `Ticket ID: ${ticketData.id}` }
+    });
+
+    await channel.send({
+      content: `<@${notifyUserId}>`,
+      embeds: [escalationEmbed],
+      allowedMentions: { users: [notifyUserId] }
+    });
+
+    await logTicketEvent({
+      client: channel.client,
+      guildId: channel.guild.id,
+      event: {
+        type: 'human_requested',
+        ticketId: channel.id,
+        ticketNumber: ticketData.id,
+        userId: ticketData.userId,
+        executorId: requester.id,
+        metadata: {
+          notifyUserId,
+          requestedAt: ticketData.humanRequestedAt
+        }
+      }
+    });
+
+    return { ticketData, notifyUserId };
+
+  } catch (error) {
+    rethrowTicketError(error, 'requestHumanSupport', 'Failed to request human support. Please try again in a moment.', { guildId: channel?.guild?.id, channelId: channel?.id, requesterId: requester?.id });
   }
 }
 
@@ -571,16 +703,21 @@ export async function reopenTicket(channel, reopener) {
     if (ticketMessage) {
       const embed = ticketMessage.embeds[0];
       const statusField = embed.fields?.find(f => f.name === 'Status');
-      
+
       if (statusField) {
         statusField.value = '🟢 Open';
       }
-      
-      const row = buildTicketControlRow({ claimedBy: ticketData.claimedBy });
-      
-      await ticketMessage.edit({ 
+
+      const rows = buildTicketControlRows({
+        claimedBy: ticketData.claimedBy,
+        enablePriority: Boolean(config.tickets?.enablePriority),
+        showAiControls: isAiActiveForGuild(config),
+        humanRequested: Boolean(ticketData.humanRequested),
+      });
+
+      await ticketMessage.edit({
         embeds: [embed],
-        components: [row] 
+        components: rows
       });
     }
     
@@ -735,6 +872,8 @@ export async function deleteTicket(channel, deleter) {
 
     setTimeout(async () => {
       try {
+        clearTicketAiState(channel.id);
+
         logger.debug('Starting ticket deletion process', {
           channelId: channel.id,
           ticketId: ticketData.id
@@ -881,28 +1020,34 @@ export async function unclaimTicket(channel, unclaimer) {
     const previousClaimer = ticketData.claimedBy;
     ticketData.claimedBy = null;
     ticketData.claimedAt = null;
-    
+
+    const config = await getGuildConfig(channel.client, channel.guild.id);
+
     await saveTicketData(channel.guild.id, channel.id, ticketData);
-    
+
     const messages = await channel.messages.fetch();
-    const ticketMessage = messages.find(m => 
-      m.embeds.length > 0 && 
+    const ticketMessage = messages.find(m =>
+      m.embeds.length > 0 &&
       m.embeds[0].title?.startsWith('Ticket #')
     );
-    
+
     if (ticketMessage) {
       const embed = ticketMessage.embeds[0];
       const claimedField = embed.fields?.find(f => f.name === 'Claimed By');
-      
+
       if (claimedField) {
         claimedField.value = 'Not claimed';
       }
-      
-      const row = buildTicketControlRow();
-      
-      await ticketMessage.edit({ 
+
+      const rows = buildTicketControlRows({
+        enablePriority: Boolean(config.tickets?.enablePriority),
+        showAiControls: isAiActiveForGuild(config),
+        humanRequested: Boolean(ticketData.humanRequested),
+      });
+
+      await ticketMessage.edit({
         embeds: [embed],
-        components: [row] 
+        components: rows
       });
     }
     

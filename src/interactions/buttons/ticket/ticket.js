@@ -1,6 +1,7 @@
 import createTicketHandler, {
   closeTicketHandler,
   claimTicketHandler,
+  requestHumanTicketHandler,
   priorityTicketHandler,
   pinTicketHandler,
   unclaimTicketHandler,
@@ -12,6 +13,7 @@ export default [
   createTicketHandler,
   closeTicketHandler,
   claimTicketHandler,
+  requestHumanTicketHandler,
   priorityTicketHandler,
   pinTicketHandler,
   unclaimTicketHandler,

@@ -9,6 +9,7 @@
 ## Table of Contents
 
 - [Features Overview](#features-overview)
+- [Ticket AI Assistant](#ticket-ai)
 - [Quick Setup](#quick-setup)
 - [Manual Installation Steps](#manual-installation-steps)
 - [Support Server](https://discord.gg/QnWNz2dKCE)
@@ -41,6 +42,8 @@ TitanBot offers a complete suite of tools for Discord server management and comm
 - **Text Reversal** - Reverse any text
 
 ### Advanced Ticket System
+- **AI Assistant** - Answers basic questions in tickets automatically (answer-only, no actions)
+- **Request Human** - One-click escalation that pings staff and pauses the AI in that ticket
 - **Claim & Priority** - Staff ticket management
 - **Ticket Limits** - Prevent spam
 - **Transcript System** - Save ticket history
@@ -122,6 +125,47 @@ Kicks: 0
 Requires the **Manage Server** permission. The bot needs **View Channel**, **Send Messages**,
 and **Embed Links** in the honeypot channel, plus **Kick Members** to softban offenders.
 Server owners and administrators are never kicked by the honeypot.
+
+<a name="ticket-ai"></a>
+## Ticket AI Assistant
+
+TitanBot can answer basic questions inside support tickets automatically.
+
+- **Answer-only by design** — the assistant can *only* reply with text answers. It has no
+  tools and can never give/remove roles, ban, kick, timeout, manage channels, change
+  permissions, run commands, generate images, create files, or take any other action.
+- **Request Human button** — every AI-enabled ticket shows a **🧑‍💼 Request Human** button.
+  Clicking it pings the configured staff user and the AI **stops replying** in that ticket.
+- **Honest fallback** — if the AI doesn't know an answer or can't help, it says so and
+  points the user to Request Human instead of making things up.
+- **Spam-safe** — burst coalescing, per-user rate limits, a per-ticket reply cap, duplicate
+  reply suppression, and a provider circuit breaker keep it quiet and cheap.
+- Replies are sent as embeds with all mention parsing disabled, so the AI can never ping
+  `@everyone`, roles, or users.
+
+### Setup
+
+Add an OpenAI-compatible API key to your environment and restart the bot:
+
+```env
+AI_TICKETS_ENABLED=true
+AI_API_KEY=your_api_key_here
+AI_API_BASE_URL=https://api.openai.com/v1    # any OpenAI-compatible endpoint (OpenRouter, Groq, ...)
+AI_TICKET_MODEL=gpt-4o-mini
+TICKET_HUMAN_NOTIFY_USER_ID=1377402826514235442   # user pinged on "Request Human"
+```
+
+Without `AI_API_KEY` the assistant stays off and the ticket system behaves exactly as before.
+
+### Managing it per server
+
+```
+/ticket ai enabled:true                    Turn the assistant on/off for this server
+/ticket ai enabled:true notify_user:@User  Override who gets pinged on "Request Human"
+```
+
+The AI only responds to the ticket creator (never to staff, bots, or commands), and only in
+open tickets where no human has been requested.
 
 <a name="quick-setup"></a>
 ## Quick Setup (Recommended for non-coders)

@@ -90,6 +90,7 @@ function getLogChannelForEventType(config, eventType) {
     case 'pin':
     case 'unpin':
     case 'feedback':
+    case 'human_requested':
       return config.ticketLogsChannelId || null;
 
     default:
@@ -106,6 +107,7 @@ const TICKET_EVENT_STYLES = {
   priority: { color: 0x9b59b6, title: 'Priority Updated' },
   transcript: { color: 0x57F287, title: 'Transcript Generated' },
   feedback: { color: 0x57F287, title: 'Feedback Received' },
+  human_requested: { color: 0x2ecc71, title: 'Human Support Requested' },
 };
 
 async function createTicketLogEmbed(guild, event) {
@@ -169,6 +171,29 @@ async function createTicketLogEmbed(guild, event) {
           inline: true,
         },
       ];
+      break;
+
+    case 'human_requested':
+      author = await resolveUserAuthor(guild.client, event.executorId);
+      inlineFields = [
+        { name: 'Ticket', value: ticketRef, inline: true },
+        { name: 'Requested by', value: executorMention || 'Unknown', inline: true },
+      ];
+      if (channelMention) {
+        inlineFields.push({ name: 'Channel', value: channelMention, inline: true });
+      }
+      if (event.metadata?.notifyUserId) {
+        fields.push({
+          name: 'Staff notified',
+          value: `<@${event.metadata.notifyUserId}>`,
+          inline: false,
+        });
+        fields.push({
+          name: 'AI assistant',
+          value: 'Stopped replying in this ticket.',
+          inline: false,
+        });
+      }
       break;
 
     case 'priority': {

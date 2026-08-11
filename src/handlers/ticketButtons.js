@@ -1,6 +1,6 @@
 import { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, AttachmentBuilder, MessageFlags } from 'discord.js';
 import { createEmbed, successEmbed } from '../utils/embeds.js';
-import { createTicket, closeTicket, claimTicket, updateTicketPriority } from '../services/ticket.js';
+import { createTicket, closeTicket, claimTicket, updateTicketPriority, requestHumanSupport } from '../services/ticket.js';
 import { getGuildConfig } from '../services/config/guildConfig.js';
 import { logTicketEvent } from '../utils/ticket/ticketLogging.js';
 import { logger } from '../utils/logger.js';
@@ -266,6 +266,39 @@ const claimTicketHandler = {
   }
 };
 
+const requestHumanTicketHandler = {
+  name: 'ticket_request_human',
+  async execute(interaction, client) {
+    try {
+      if (!(await ensureGuildContext(interaction))) return;
+
+      // Only the ticket creator or ticket staff/managers can escalate to a human.
+      await assertTicketPermission(interaction, client, 'request human support', { allowTicketCreator: true }, 2000);
+
+      // Guard against ping spam from repeated clicking.
+      const rateLimitKey = `${interaction.user.id}:request_human`;
+      const allowed = await checkRateLimit(rateLimitKey, 3, 120000);
+      if (!allowed) {
+        await replyUserError(interaction, { type: ErrorTypes.RATE_LIMIT, message: 'You are requesting human support too frequently. Staff have already been notified — please wait a moment.' });
+        return;
+      }
+
+      const deferSuccess = await InteractionHelper.safeDefer(interaction, { flags: MessageFlags.Ephemeral });
+      if (!deferSuccess) return;
+
+      const { notifyUserId } = await requestHumanSupport(interaction.channel, interaction.user);
+      await interaction.editReply({ embeds: [successEmbed('Human Requested', `Staff (<@${notifyUserId}>) have been notified and will assist you shortly. The AI assistant has stopped replying in this ticket.`)] });
+    } catch (error) {
+      logger.error('Error requesting human support:', error);
+      if (!interaction.replied && !interaction.deferred) {
+        await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'An error occurred while requesting human support.' });
+      } else if (interaction.deferred) {
+        await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: error?.userMessage || 'An error occurred while requesting human support.' });
+      }
+    }
+  }
+};
+
 const priorityTicketHandler = {
   name: 'ticket_priority',
   async execute(interaction, client, args) {
@@ -472,14 +505,15 @@ const deleteTicketHandler = {
 };
 
 export default createTicketHandler;
-export { 
-  createTicketModalHandler, 
+export {
+  createTicketModalHandler,
   closeTicketModalHandler,
-  closeTicketHandler, 
-  claimTicketHandler, 
+  closeTicketHandler,
+  claimTicketHandler,
+  requestHumanTicketHandler,
   priorityTicketHandler,
   pinTicketHandler,
   unclaimTicketHandler,
   reopenTicketHandler,
-  deleteTicketHandler 
+  deleteTicketHandler
 };
