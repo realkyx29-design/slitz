@@ -38,6 +38,17 @@ export const DEFAULT_GUILD_CONFIG = {
     },
     verification: {
         enabled: false
+    },
+    honeypot: {
+        enabled: false,
+        channelId: null,
+        messageId: null,
+        kicks: 0,
+        icon: '⚠️',
+        heading: ['DO NOT SEND', 'MESSAGES IN THIS', 'CHANNEL'],
+        description: 'This channel is used to catch spam bots. Any messages sent here will result in a **softban.**',
+        counterLabel: 'Kicks',
+        color: '#2F3136'
     }
 };
 
