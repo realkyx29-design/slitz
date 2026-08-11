@@ -2,7 +2,7 @@ import { getColor } from '../../config/bot.js';
 import { SlashCommandBuilder, PermissionFlagsBits, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } from 'discord.js';
 import { createEmbed, successEmbed } from '../../utils/embeds.js';
 import { getGuildConfig, setGuildConfig, updateGuildConfig } from '../../services/config/guildConfig.js';
-import { normalizeAiConfig, isAiConfigured, resolveHumanNotifyUserId } from '../../services/ticketAI/aiSupportService.js';
+import { getAiConfigStatus, maskApiKey, resolveHumanNotifyUserId, testAiConnection } from '../../services/ticketAI/aiSupportService.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 import { logger } from '../../utils/logger.js';
 import { handleInteractionError, replyUserError, ErrorTypes } from '../../utils/errorHandler.js';
@@ -44,7 +44,8 @@ export default {
                 .setName('ai')
                 .setDescription('Configure the ticket AI assistant and the "Request Human" escalation.')
                 .addBooleanOption((option) => option.setName('enabled').setDescription('Let the AI assistant answer basic questions in tickets').setRequired(true))
-                .addUserOption((option) => option.setName('notify_user').setDescription('User to ping when someone requests a human (optional override)').setRequired(false)),
+                .addUserOption((option) => option.setName('notify_user').setDescription('User to ping when someone requests a human (optional override)').setRequired(false))
+                .addBooleanOption((option) => option.setName('test').setDescription('Send a live test request to verify the API key actually works').setRequired(false)),
         )
         .addSubcommand((subcommand) => subcommand.setName('dashboard').setDescription('Open the interactive ticket system dashboard')),
     category: 'ticket',
@@ -77,6 +78,7 @@ export default {
 async function runAiConfig(interaction, client) {
     const enabled = interaction.options.getBoolean('enabled', true);
     const notifyUser = interaction.options.getUser('notify_user');
+    const runTest = interaction.options.getBoolean('test') === true;
 
     const updates = { ticketAiEnabled: enabled };
     if (notifyUser) {
@@ -86,7 +88,8 @@ async function runAiConfig(interaction, client) {
     await updateGuildConfig(client, interaction.guildId, updates);
 
     const savedConfig = await getGuildConfig(client, interaction.guildId);
-    const aiConfig = normalizeAiConfig();
+    const aiStatus = getAiConfigStatus();
+    const aiConfig = aiStatus.config;
     const effectiveNotifyUserId = resolveHumanNotifyUserId(savedConfig);
 
     const lines = [
@@ -94,12 +97,37 @@ async function runAiConfig(interaction, client) {
         `**Request Human ping:** <@${effectiveNotifyUserId}>`,
     ];
 
-    if (enabled && !isAiConfigured()) {
-        lines.push('', '⚠️ **The AI cannot reply yet** — no `AI_API_KEY` is configured in the bot environment. Add one and restart the bot to activate the assistant. The "Request Human" button will still work.');
+    if (enabled && !aiStatus.ok) {
+        lines.push(
+            '',
+            `⚠️ **The AI cannot reply yet** — ${aiStatus.summary}`,
+            '',
+            'The "Request Human" button still works in the meantime.',
+        );
     } else if (enabled) {
-        lines.push('', `**Model:** \`${aiConfig.model}\` — the assistant only answers questions in open tickets and stops when a human is requested.`);
+        lines.push(
+            '',
+            `**Model:** \`${aiConfig.model}\``,
+            `**Provider:** \`${aiConfig.baseUrl}\``,
+            `**API key:** ✅ loaded from \`${aiConfig.apiKeySource}\` (\`${maskApiKey(aiConfig.apiKey)}\`)`,
+            '',
+            'The assistant only answers questions in open tickets and stops when a human is requested.',
+        );
     } else {
         lines.push('', 'New tickets will no longer show the AI/Request Human controls. Existing tickets keep their current controls.');
+    }
+
+    // Optional live check — proves whether the key really works end to end.
+    if (runTest && enabled) {
+        const result = await testAiConnection();
+        lines.push('', '**🔍 Live connection test**');
+        lines.push(
+            result.ok
+                ? `✅ Success in ${result.latencyMs}ms — ${result.detail}`
+                : `❌ Failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ''} — ${result.detail}`,
+        );
+    } else if (runTest && !enabled) {
+        lines.push('', '*Skipped the live test because the assistant is disabled for this server.*');
     }
 
     await InteractionHelper.safeEditReply(interaction, {
