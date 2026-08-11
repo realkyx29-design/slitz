@@ -155,7 +155,53 @@ AI_TICKET_MODEL=gpt-4o-mini
 TICKET_HUMAN_NOTIFY_USER_ID=1377402826514235442   # user pinged on "Request Human"
 ```
 
-Without `AI_API_KEY` the assistant stays off and the ticket system behaves exactly as before.
+`AI_API_KEY` is the documented variable, but a provider-specific key already in your
+environment is picked up automatically (with a matching default endpoint and model):
+
+| Variable | Default endpoint | Default model |
+| --- | --- | --- |
+| `AI_API_KEY` | `AI_API_BASE_URL` (or OpenAI) | `gpt-4o-mini` |
+| `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | `openai/gpt-4o-mini` |
+| `GROQ_API_KEY` | `https://api.groq.com/openai/v1` | `llama-3.1-8b-instant` |
+| `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | `Llama-3.1-8B-Instruct-Turbo` |
+| `XAI_API_KEY` | `https://api.x.ai/v1` | `grok-2-latest` |
+| `MISTRAL_API_KEY` | `https://api.mistral.ai/v1` | `mistral-small-latest` |
+
+Setting `AI_API_BASE_URL` / `AI_TICKET_MODEL` always overrides the defaults above.
+Keys are read tolerantly — surrounding quotes, trailing newlines and stray whitespace
+(the usual result of pasting into a hosting panel) are stripped automatically.
+
+Without a key the assistant stays off and the ticket system behaves exactly as before.
+
+### Verifying / troubleshooting the key
+
+Run the built-in live check — it sends one tiny request to your provider and reports
+exactly what happened:
+
+```
+/ticket ai enabled:true test:true
+```
+
+The bot also prints the assistant's state on startup, e.g.
+`🤖 Ticket AI: ready | key: AI_API_KEY (sk-a••••••6789) | model: gpt-4o-mini`.
+
+If it says the AI is inactive, the message names the actual cause:
+
+| Message | Cause / fix |
+| --- | --- |
+| `No API key found` | No key variable is set in the environment the bot actually runs in. |
+| `still holds the example placeholder value` | `.env` was copied from `.env.example` but never edited. |
+| `AI_TICKETS_ENABLED is set to a false value` | The key is fine — the master switch is off. Set it to `true`. |
+| `401 Unauthorized` | The provider rejected the key (wrong/revoked key, or wrong provider for `AI_API_BASE_URL`). |
+| `404` | Wrong `AI_API_BASE_URL`, or the model name doesn't exist on that provider. |
+| `429` | Out of quota / rate limited — check billing at your provider. |
+
+`.env` is always read from the folder containing `package.json`, so the bot picks up
+your key even when it is launched from a different working directory (systemd, pm2,
+Docker). Real environment variables take priority over `.env`, except when they are
+empty — a blank value never shadows a real one.
 
 ### Managing it per server
 

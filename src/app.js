@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import { envFilesLoaded } from './config/loadEnv.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, Collection, GatewayIntentBits } from 'discord.js';
@@ -17,6 +17,7 @@ import { getApiStatusMonitor } from './services/apiStatusMonitor.js';
 import { createApiStatusRouter } from './http/apiStatusRoutes.js';
 import { loadCommands, registerCommands as registerSlashCommands } from './handlers/loaders/commandLoader.js';
 import { runSafeTask, handleTaskError, ErrorCodes } from './utils/errorHandler.js';
+import { getAiConfigStatus, maskApiKey } from './services/ticketAI/aiSupportService.js';
 import { initializeMusic } from './services/music/riffySetup.js';
 import { shutdownMusic } from './services/music/playerHandler.js';
 import { EXPECTED_SCHEMA_VERSION, EXPECTED_SCHEMA_LABEL } from './config/database/schemaVersion.js';
@@ -101,6 +102,8 @@ class TitanBot extends Client {
       await this.registerCommands();
       startupLog('Slash commands registration complete');
       
+      this.logAiStatus();
+
       const databaseMode = dbStatus.isDegraded
         ? 'Optional in-memory mode (data resets after restart)'
         : 'Connected (persistent data enabled)';
@@ -113,6 +116,29 @@ class TitanBot extends Client {
     } catch (error) {
       logger.error('Failed to start bot:', error);
       process.exit(1);
+    }
+  }
+
+  /**
+   * Report the ticket AI assistant's real state at boot so a missing/blocked key
+   * is obvious in the logs instead of only surfacing inside `/ticket ai`.
+   */
+  logAiStatus() {
+    try {
+      const status = getAiConfigStatus();
+      if (status.ok) {
+        startupLog(
+          `🤖 Ticket AI: ready | key: ${status.config.apiKeySource} (${maskApiKey(status.config.apiKey)}) `
+          + `| model: ${status.config.model} | provider: ${status.config.baseUrl}`
+        );
+        return;
+      }
+      logger.warn(`🤖 Ticket AI: inactive — ${status.summary}`);
+      if (envFilesLoaded.length === 0) {
+        logger.warn('🤖 Ticket AI: no .env file was found — set the variables in your host\'s environment, or place .env next to package.json.');
+      }
+    } catch (error) {
+      logger.warn(`Could not determine ticket AI status: ${error.message}`);
     }
   }
 

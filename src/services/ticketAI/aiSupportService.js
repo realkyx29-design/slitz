@@ -70,22 +70,179 @@ function toPositiveInt(value, fallback) {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+const FALSEY_VALUES = new Set(['false', '0', 'no', 'off', 'disabled']);
+
+/** Tolerant boolean parsing — an unset/blank value falls back to `fallback`. */
+export function parseBooleanFlag(value, fallback = true) {
+    if (value === undefined || value === null) {
+        return fallback;
+    }
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized === '') {
+        return fallback;
+    }
+    return !FALSEY_VALUES.has(normalized);
+}
+
+/**
+ * Clean a pasted secret: strips surrounding quotes, zero-width characters, and
+ * stray whitespace/newlines. Hosting dashboards (Railway, Pterodactyl, systemd)
+ * routinely store keys as `"sk-..."` or with a trailing newline, which made the
+ * key look present to the user but arrive at the provider malformed.
+ */
+export function cleanSecret(value) {
+    return String(value ?? '')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .trim()
+        .replace(/^['"]|['"]$/g, '')
+        .trim();
+}
+
+/** Values people copy out of .env.example — present, but not a real key. */
+const PLACEHOLDER_KEYS = new Set([
+    'your_api_key_here',
+    'your_ai_api_key_here',
+    'your-api-key-here',
+    'sk-xxxxxxxx',
+    'changeme',
+    'none',
+    'null',
+    'undefined',
+]);
+
+export function isPlaceholderKey(key) {
+    const normalized = cleanSecret(key).toLowerCase();
+    return normalized.length > 0 && PLACEHOLDER_KEYS.has(normalized);
+}
+
+/**
+ * Supported key variable names, in priority order. `AI_API_KEY` is the documented
+ * one, but plenty of hosts/users already have a provider-specific key set — there
+ * is no reason to claim "no API key" when a perfectly usable one is right there.
+ */
+export const AI_KEY_ENV_VARS = [
+    { name: 'AI_API_KEY', baseUrl: null, model: null },
+    { name: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+    { name: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
+    { name: 'GROQ_API_KEY', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant' },
+    { name: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+    { name: 'TOGETHER_API_KEY', baseUrl: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.1-8B-Instruct-Turbo' },
+    { name: 'XAI_API_KEY', baseUrl: 'https://api.x.ai/v1', model: 'grok-2-latest' },
+    { name: 'MISTRAL_API_KEY', baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+];
+
+/** Find the first usable key, ignoring blanks and .env.example placeholders. */
+export function resolveApiKeySource(env = process.env) {
+    let placeholderVar = null;
+
+    for (const candidate of AI_KEY_ENV_VARS) {
+        const raw = env[candidate.name];
+        const key = cleanSecret(raw);
+        if (!key) continue;
+        if (isPlaceholderKey(key)) {
+            placeholderVar = placeholderVar || candidate.name;
+            continue;
+        }
+        return { key, source: candidate.name, defaults: candidate, placeholderVar };
+    }
+
+    return { key: '', source: null, defaults: null, placeholderVar };
+}
+
 export function normalizeAiConfig(env = process.env) {
+    const { key, source, defaults, placeholderVar } = resolveApiKeySource(env);
+
+    // An explicit AI_API_BASE_URL / AI_TICKET_MODEL always wins; otherwise fall
+    // back to sane defaults for whichever provider key was actually found.
+    const explicitBaseUrl = cleanSecret(env.AI_API_BASE_URL);
+    const explicitModel = cleanSecret(env.AI_TICKET_MODEL);
+
+    const baseUrl = (explicitBaseUrl || defaults?.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    const model = explicitModel || defaults?.model || 'gpt-4o-mini';
+
     return {
-        enabled: String(env.AI_TICKETS_ENABLED ?? 'true').toLowerCase() !== 'false',
-        apiKey: (env.AI_API_KEY || '').trim(),
-        baseUrl: (env.AI_API_BASE_URL || 'https://api.openai.com/v1').trim().replace(/\/+$/, ''),
-        model: (env.AI_TICKET_MODEL || 'gpt-4o-mini').trim(),
+        enabled: parseBooleanFlag(env.AI_TICKETS_ENABLED, true),
+        apiKey: key,
+        apiKeySource: source,
+        placeholderKeyVar: placeholderVar,
+        baseUrl,
+        model,
         replyDelayMs: toPositiveInt(env.AI_TICKET_REPLY_DELAY_MS, AI_LIMITS.REPLY_DELAY_MS),
         maxRepliesPerTicket: toPositiveInt(env.AI_TICKET_MAX_REPLIES_PER_TICKET, AI_LIMITS.MAX_REPLIES_PER_TICKET),
-        humanNotifyUserId: (env.TICKET_HUMAN_NOTIFY_USER_ID || DEFAULT_HUMAN_NOTIFY_USER_ID).trim(),
+        humanNotifyUserId: cleanSecret(env.TICKET_HUMAN_NOTIFY_USER_ID) || DEFAULT_HUMAN_NOTIFY_USER_ID,
         timeoutMs: toPositiveInt(env.AI_TICKET_TIMEOUT_MS, AI_LIMITS.REQUEST_TIMEOUT_MS),
     };
 }
 
-export function isAiConfigured(env = process.env) {
+export const AI_STATUS = {
+    READY: 'ready',
+    DISABLED_BY_ENV: 'disabled-by-env',
+    PLACEHOLDER_KEY: 'placeholder-key',
+    MISSING_KEY: 'missing-key',
+};
+
+/**
+ * Explain *precisely* why the assistant is (not) usable, so operators never get
+ * told "no API key" when the real problem is `AI_TICKETS_ENABLED=false` or a
+ * placeholder value left over from .env.example.
+ */
+export function getAiConfigStatus(env = process.env) {
     const config = normalizeAiConfig(env);
-    return config.enabled && config.apiKey.length > 0;
+
+    if (config.apiKey && !config.enabled) {
+        return {
+            ok: false,
+            status: AI_STATUS.DISABLED_BY_ENV,
+            config,
+            summary: 'An API key was found, but `AI_TICKETS_ENABLED` is set to a false value in the bot environment. Set `AI_TICKETS_ENABLED=true` (or remove it) and restart the bot.',
+        };
+    }
+
+    if (!config.apiKey && config.placeholderKeyVar) {
+        return {
+            ok: false,
+            status: AI_STATUS.PLACEHOLDER_KEY,
+            config,
+            summary: `\`${config.placeholderKeyVar}\` still holds the example placeholder value. Replace it with your real API key and restart the bot.`,
+        };
+    }
+
+    if (!config.apiKey) {
+        return {
+            ok: false,
+            status: AI_STATUS.MISSING_KEY,
+            config,
+            summary: 'No API key found. Set `AI_API_KEY` (or `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `GROQ_API_KEY`) in the bot environment and restart the bot.',
+        };
+    }
+
+    if (!config.enabled) {
+        return {
+            ok: false,
+            status: AI_STATUS.DISABLED_BY_ENV,
+            config,
+            summary: 'The assistant is switched off via `AI_TICKETS_ENABLED`.',
+        };
+    }
+
+    return {
+        ok: true,
+        status: AI_STATUS.READY,
+        config,
+        summary: `Ready — key from \`${config.apiKeySource}\`, model \`${config.model}\`.`,
+    };
+}
+
+export function isAiConfigured(env = process.env) {
+    return getAiConfigStatus(env).ok;
+}
+
+/** Masked key preview for diagnostics — never exposes the secret itself. */
+export function maskApiKey(key) {
+    const value = cleanSecret(key);
+    if (!value) return 'not set';
+    if (value.length <= 8) return `${value.slice(0, 2)}${'•'.repeat(4)}`;
+    return `${value.slice(0, 4)}${'•'.repeat(6)}${value.slice(-4)}`;
 }
 
 /** AI answers in this guild's tickets unless the guild disabled it and the API key exists. */
@@ -193,6 +350,7 @@ export function looksLikePrefixCommand(content, prefix) {
 const providerState = {
     consecutiveFailures: 0,
     pausedUntil: 0,
+    lastError: null,
 };
 
 function classifyProviderError(error) {
@@ -210,26 +368,84 @@ function classifyProviderError(error) {
     return { retryable: true, pauseMs: 15 * 60 * 1000 };
 }
 
+/** Human-readable hint for the most common provider failures. */
+export function describeProviderError(error) {
+    const status = error?.response?.status;
+    const providerMessage = error?.response?.data?.error?.message || error?.response?.data?.message;
+
+    if (status === 401) {
+        return 'The API key was rejected by the provider (401 Unauthorized). Check that AI_API_KEY is correct, active, and belongs to the provider set in AI_API_BASE_URL.';
+    }
+    if (status === 403) {
+        return 'The provider refused the request (403 Forbidden) — the key may lack access to this model, or billing/region is blocked.';
+    }
+    if (status === 404) {
+        return 'The provider returned 404 — usually a wrong AI_API_BASE_URL or a model name that does not exist for this provider.';
+    }
+    if (status === 429) {
+        return 'Rate limited or out of quota (429). Check your provider billing/usage limits.';
+    }
+    if (status >= 500) {
+        return 'The provider is having a server-side outage (5xx).';
+    }
+    if (error?.code === 'ECONNABORTED' || /timeout/i.test(error?.message || '')) {
+        return 'The request to the provider timed out. Check network egress from the bot host.';
+    }
+    if (error?.code === 'ENOTFOUND' || error?.code === 'EAI_AGAIN') {
+        return 'DNS lookup for the provider failed — check AI_API_BASE_URL and the host\'s network access.';
+    }
+    return providerMessage ? `Provider error: ${providerMessage}` : 'Unexpected provider failure.';
+}
+
 function noteProviderFailure(error) {
     const { pauseMs } = classifyProviderError(error);
+    const status = error?.response?.status;
     providerState.consecutiveFailures += 1;
 
-    // Trip the breaker on explicit rate/limits or 3+ consecutive failures.
-    if (providerState.consecutiveFailures >= 3 || pauseMs === 5 * 60 * 1000) {
+    // Credential failures are terminal until fixed — trip the breaker immediately
+    // instead of burning three more requests on a key the provider already rejected.
+    const isAuthFailure = status === 401 || status === 403;
+    if (isAuthFailure || providerState.consecutiveFailures >= 3 || pauseMs === 5 * 60 * 1000) {
         providerState.pausedUntil = Date.now() + pauseMs;
     }
 
-    logger.warn('Ticket AI provider call failed', {
-        status: error?.response?.status,
+    providerState.lastError = {
+        status: status ?? null,
+        hint: describeProviderError(error),
+        at: new Date().toISOString(),
+    };
+
+    const details = {
+        status: status ?? null,
         message: error?.message,
+        hint: providerState.lastError.hint,
         consecutiveFailures: providerState.consecutiveFailures,
         pausedUntil: providerState.pausedUntil ? new Date(providerState.pausedUntil).toISOString() : null,
-    });
+    };
+
+    // Bad credentials are an operator problem, not noise — make them loud.
+    if (isAuthFailure) {
+        logger.error('Ticket AI provider rejected the API key', details);
+    } else {
+        logger.warn('Ticket AI provider call failed', details);
+    }
+}
+
+export function getLastProviderError() {
+    return providerState.lastError || null;
 }
 
 function noteProviderSuccess() {
     providerState.consecutiveFailures = 0;
     providerState.pausedUntil = 0;
+    providerState.lastError = null;
+}
+
+/** Test hook: clear the circuit breaker between cases. */
+export function resetProviderState() {
+    providerState.consecutiveFailures = 0;
+    providerState.pausedUntil = 0;
+    providerState.lastError = null;
 }
 
 export function getProviderPauseRemainingMs(now = Date.now()) {
@@ -288,6 +504,48 @@ export async function requestAiCompletion({ messages, config, transport = null }
     }
 
     return { text: null, error: lastError };
+}
+
+/**
+ * Live end-to-end check: does the configured key actually work right now?
+ * Used by `/ticket ai` so operators get a definitive answer instead of guessing
+ * whether their key is loaded. Sends one tiny completion.
+ */
+export async function testAiConnection({ env = process.env, transport = null } = {}) {
+    const status = getAiConfigStatus(env);
+    if (!status.ok) {
+        return { ok: false, status: status.status, detail: status.summary, config: status.config };
+    }
+
+    const startedAt = Date.now();
+    const { text, error } = await requestAiCompletion({
+        messages: [
+            { role: 'system', content: 'Reply with the single word: ok' },
+            { role: 'user', content: 'ping' },
+        ],
+        config: { ...status.config, timeoutMs: Math.min(status.config.timeoutMs, 10000) },
+        transport,
+    });
+
+    if (error) {
+        return {
+            ok: false,
+            status: 'provider-error',
+            detail: describeProviderError(error),
+            httpStatus: error?.response?.status ?? null,
+            latencyMs: Date.now() - startedAt,
+            config: status.config,
+        };
+    }
+
+    return {
+        ok: true,
+        status: AI_STATUS.READY,
+        detail: `Provider responded successfully with model \`${status.config.model}\`.`,
+        latencyMs: Date.now() - startedAt,
+        sample: String(text).trim().slice(0, 60),
+        config: status.config,
+    };
 }
 
 // ---------------------------------------------------------------------------

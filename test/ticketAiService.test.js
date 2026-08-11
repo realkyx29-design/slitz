@@ -26,6 +26,16 @@ const {
     requestAiCompletion,
     buildConversationMessages,
     computeReplyWaitMs,
+    getAiConfigStatus,
+    AI_STATUS,
+    parseBooleanFlag,
+    cleanSecret,
+    maskApiKey,
+    isPlaceholderKey,
+    resolveApiKeySource,
+    describeProviderError,
+    testAiConnection,
+    resetProviderState,
 } = await import('../src/services/ticketAI/aiSupportService.js');
 
 // ---------------------------------------------------------------------------
@@ -322,4 +332,161 @@ test('computeReplyWaitMs enforces debounce and minimum interval', () => {
 test('fallback message points users at Request Human', () => {
     assert.match(AI_FALLBACK_MESSAGE, /Request Human/);
     assert.match(AI_FALLBACK_MESSAGE, /rather not guess/i);
+});
+
+// ---------------------------------------------------------------------------
+// API key detection (regression: "no API key" reported when a key was present)
+// ---------------------------------------------------------------------------
+
+test('cleanSecret strips quotes, whitespace and zero-width characters', () => {
+    assert.equal(cleanSecret('  sk-test  '), 'sk-test');
+    assert.equal(cleanSecret('"sk-test"'), 'sk-test');
+    assert.equal(cleanSecret("'sk-test'"), 'sk-test');
+    assert.equal(cleanSecret('sk-test\n'), 'sk-test');
+    assert.equal(cleanSecret('\u200Bsk-test\uFEFF'), 'sk-test');
+    assert.equal(cleanSecret(undefined), '');
+});
+
+test('a quoted or padded key is still detected as configured', () => {
+    assert.equal(isAiConfigured({ AI_API_KEY: '"sk-test"' }), true);
+    assert.equal(isAiConfigured({ AI_API_KEY: '  sk-test\n' }), true);
+    assert.equal(normalizeAiConfig({ AI_API_KEY: '"sk-test"' }).apiKey, 'sk-test');
+});
+
+test('provider-specific keys are accepted with matching defaults', () => {
+    const openai = normalizeAiConfig({ OPENAI_API_KEY: 'sk-openai' });
+    assert.equal(openai.apiKey, 'sk-openai');
+    assert.equal(openai.apiKeySource, 'OPENAI_API_KEY');
+    assert.equal(openai.baseUrl, 'https://api.openai.com/v1');
+
+    const groq = normalizeAiConfig({ GROQ_API_KEY: 'gsk-test' });
+    assert.equal(groq.apiKeySource, 'GROQ_API_KEY');
+    assert.equal(groq.baseUrl, 'https://api.groq.com/openai/v1');
+
+    const router = normalizeAiConfig({ OPENROUTER_API_KEY: 'or-test' });
+    assert.equal(router.baseUrl, 'https://openrouter.ai/api/v1');
+
+    assert.equal(isAiConfigured({ OPENROUTER_API_KEY: 'or-test' }), true);
+});
+
+test('AI_API_KEY wins over provider-specific keys', () => {
+    const config = normalizeAiConfig({ AI_API_KEY: 'primary', GROQ_API_KEY: 'secondary' });
+    assert.equal(config.apiKey, 'primary');
+    assert.equal(config.apiKeySource, 'AI_API_KEY');
+});
+
+test('explicit base URL and model always override provider defaults', () => {
+    const config = normalizeAiConfig({
+        GROQ_API_KEY: 'gsk-test',
+        AI_API_BASE_URL: 'https://custom.example/v1/',
+        AI_TICKET_MODEL: 'my-model',
+    });
+    assert.equal(config.baseUrl, 'https://custom.example/v1');
+    assert.equal(config.model, 'my-model');
+});
+
+test('placeholder keys are rejected and reported as such', () => {
+    assert.equal(isPlaceholderKey('your_api_key_here'), true);
+    assert.equal(isPlaceholderKey('sk-real-key'), false);
+
+    const status = getAiConfigStatus({ AI_API_KEY: 'your_api_key_here' });
+    assert.equal(status.ok, false);
+    assert.equal(status.status, AI_STATUS.PLACEHOLDER_KEY);
+    assert.match(status.summary, /placeholder/i);
+});
+
+test('resolveApiKeySource skips placeholders and finds the next real key', () => {
+    const resolved = resolveApiKeySource({ AI_API_KEY: 'your_api_key_here', GROQ_API_KEY: 'gsk-real' });
+    assert.equal(resolved.key, 'gsk-real');
+    assert.equal(resolved.source, 'GROQ_API_KEY');
+    assert.equal(resolved.placeholderVar, 'AI_API_KEY');
+});
+
+test('parseBooleanFlag treats blanks as the default and understands common falsey words', () => {
+    assert.equal(parseBooleanFlag(undefined, true), true);
+    assert.equal(parseBooleanFlag('', true), true);
+    assert.equal(parseBooleanFlag('   ', true), true);
+    assert.equal(parseBooleanFlag('true'), true);
+    assert.equal(parseBooleanFlag('TRUE'), true);
+    assert.equal(parseBooleanFlag(' False '), false);
+    assert.equal(parseBooleanFlag('0'), false);
+    assert.equal(parseBooleanFlag('no'), false);
+    assert.equal(parseBooleanFlag('off'), false);
+});
+
+test('AI_TICKETS_ENABLED with stray whitespace/case still disables correctly', () => {
+    assert.equal(isAiConfigured({ AI_API_KEY: 'sk-test', AI_TICKETS_ENABLED: ' FALSE ' }), false);
+    assert.equal(isAiConfigured({ AI_API_KEY: 'sk-test', AI_TICKETS_ENABLED: '' }), true);
+    assert.equal(isAiConfigured({ AI_API_KEY: 'sk-test', AI_TICKETS_ENABLED: 'yes' }), true);
+});
+
+test('getAiConfigStatus distinguishes "disabled" from "no key"', () => {
+    const disabled = getAiConfigStatus({ AI_API_KEY: 'sk-test', AI_TICKETS_ENABLED: 'false' });
+    assert.equal(disabled.status, AI_STATUS.DISABLED_BY_ENV);
+    assert.match(disabled.summary, /AI_TICKETS_ENABLED/);
+    assert.doesNotMatch(disabled.summary, /No API key found/);
+
+    const missing = getAiConfigStatus({});
+    assert.equal(missing.status, AI_STATUS.MISSING_KEY);
+    assert.match(missing.summary, /No API key found/);
+
+    const ready = getAiConfigStatus({ AI_API_KEY: 'sk-test' });
+    assert.equal(ready.ok, true);
+    assert.equal(ready.status, AI_STATUS.READY);
+    assert.match(ready.summary, /AI_API_KEY/);
+});
+
+test('maskApiKey never leaks the full secret', () => {
+    const masked = maskApiKey('sk-1234567890abcdef');
+    assert.ok(!masked.includes('1234567890'));
+    assert.match(masked, /^sk-1/);
+    assert.match(masked, /cdef$/);
+    assert.equal(maskApiKey(''), 'not set');
+});
+
+// ---------------------------------------------------------------------------
+// Provider error diagnostics
+// ---------------------------------------------------------------------------
+
+test('describeProviderError explains the common failures', () => {
+    assert.match(describeProviderError({ response: { status: 401 } }), /rejected|Unauthorized/i);
+    assert.match(describeProviderError({ response: { status: 404 } }), /base url|model/i);
+    assert.match(describeProviderError({ response: { status: 429 } }), /rate limit|quota/i);
+    assert.match(describeProviderError({ code: 'ENOTFOUND' }), /DNS/i);
+});
+
+test('testAiConnection reports a misconfiguration without calling the provider', async () => {
+    resetProviderState();
+    let called = false;
+    const transport = async () => { called = true; return {}; };
+
+    const result = await testAiConnection({ env: {}, transport });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, AI_STATUS.MISSING_KEY);
+    assert.equal(called, false);
+});
+
+test('testAiConnection confirms a working key end to end', async () => {
+    resetProviderState();
+    const transport = async () => ({ choices: [{ message: { content: 'ok' } }] });
+
+    const result = await testAiConnection({ env: { AI_API_KEY: 'sk-test' }, transport });
+    assert.equal(result.ok, true);
+    assert.equal(result.status, AI_STATUS.READY);
+    assert.equal(typeof result.latencyMs, 'number');
+});
+
+test('testAiConnection surfaces a rejected key with an actionable hint', async () => {
+    resetProviderState();
+    const transport = async () => {
+        const err = new Error('unauthorized');
+        err.response = { status: 401 };
+        throw err;
+    };
+
+    const result = await testAiConnection({ env: { AI_API_KEY: 'sk-bad' }, transport });
+    assert.equal(result.ok, false);
+    assert.equal(result.httpStatus, 401);
+    assert.match(result.detail, /AI_API_KEY|rejected/i);
+    resetProviderState();
 });
