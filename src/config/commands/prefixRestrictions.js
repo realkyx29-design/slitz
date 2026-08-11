@@ -4,9 +4,12 @@
 
 /** Top-level commands that cannot be invoked via prefix at all. */
 export const SLASH_ONLY_COMMANDS = new Set([
+  'config-wizard',
   'configwizard',
   'help',
+  'embed-builder',
   'embedbuilder',
+  'wipe-data',
   'wipedata',
   'apply',
 ]);

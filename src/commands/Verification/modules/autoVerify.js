@@ -16,7 +16,7 @@ const defaultAccountAgeDays = autoVerifyDefaults.defaultAccountAgeDays ?? 7;
 
 export default {
     data: new SlashCommandBuilder()
-        .setName("autoverify")
+        .setName("auto-verify")
         .setDescription("Configure automatic verification settings")
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
         .addSubcommand(subcommand =>

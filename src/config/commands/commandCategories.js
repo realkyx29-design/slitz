@@ -25,7 +25,7 @@ export const CATEGORY_ICONS = {
 };
 
 /** Commands that always stay available so admins can recover access. */
-export const PROTECTED_COMMANDS = new Set(['commands', 'configwizard']);
+export const PROTECTED_COMMANDS = new Set(['commands', 'config-wizard', 'configwizard']);
 
 export function normalizeCategoryKey(category) {
   return String(category || '')

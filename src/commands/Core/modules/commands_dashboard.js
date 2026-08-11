@@ -123,7 +123,7 @@ export function buildOverviewEmbed(snapshot, guild) {
     description: `Manage slash and prefix commands for **${guild.name}**. Subcommands (e.g. \`birthday list\`) are listed separately.`,
     color: 'info',
     fields,
-    footer: '🔒 commands & configwizard always stay available',
+    footer: '🔒 commands & config-wizard always stay available',
   });
 }
 

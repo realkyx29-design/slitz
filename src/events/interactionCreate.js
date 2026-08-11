@@ -30,10 +30,15 @@ const COMMAND_ERROR_SUBTYPES = {
   warnings: 'warnings_view_failed',
   ticket: 'ticket_failed',
   serverstats: 'serverstats_failed',
+  'server-stats': 'serverstats_failed',
   gcreate: 'giveaway_failed',
+  'giveaway-create': 'giveaway_failed',
   gend: 'giveaway_failed',
+  'giveaway-end': 'giveaway_failed',
   gdelete: 'giveaway_failed',
+  'giveaway-delete': 'giveaway_failed',
   greroll: 'giveaway_failed',
+  'giveaway-reroll': 'giveaway_failed',
 };
 
 function withTraceContext(context = {}, traceContext = {}) {
@@ -211,7 +216,7 @@ export default {
               });
               await interaction.respond([]);
             }
-          } else if (interaction.commandName === 'app-admin' && focusedOption.name === 'application') {
+          } else if ((interaction.commandName === 'application-admin' || interaction.commandName === 'app-admin') && focusedOption.name === 'application') {
             try {
               const { getApplicationRoles } = await import('../utils/database.js');
               const roles = await getApplicationRoles(client, interaction.guildId);
@@ -228,14 +233,14 @@ export default {
                 }))
               );
             } catch (error) {
-              logger.error('Error handling app-admin autocomplete:', {
+              logger.error('Error handling application-admin autocomplete:', {
                 error: error.message,
                 guildId: interaction.guildId,
                 commandName: interaction.commandName
               });
               await interaction.respond([]);
             }
-          } else if (interaction.commandName === 'reactroles' && focusedOption.name === 'panel') {
+          } else if ((interaction.commandName === 'reaction-roles' || interaction.commandName === 'reactroles') && focusedOption.name === 'panel') {
             try {
               const { getAllReactionRoleMessages, deleteReactionRoleMessage } = await import('../services/reactionRoleService.js');
               const guildId = interaction.guildId;
