@@ -57,6 +57,22 @@ const VerificationConfigSchema = z
   })
   .optional();
 
+export const HoneypotConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    channelId: z.string().nullable().optional(),
+    messageId: z.string().nullable().optional(),
+    kicks: z.number().int().nonnegative().default(0),
+    icon: z.string().default('⚠️'),
+    heading: z.array(z.string()).max(3).default(['DO NOT SEND', 'MESSAGES IN THIS', 'CHANNEL']),
+    description: z
+      .string()
+      .default('This channel is used to catch spam bots. Any messages sent here will result in a **softban.**'),
+    counterLabel: z.string().default('Kicks'),
+    color: z.string().default('#2F3136')
+  })
+  .default({ enabled: false });
+
 export const GuildConfigSchema = z
   .object({
     prefix: z.string().optional(),
@@ -76,7 +92,8 @@ export const GuildConfigSchema = z
     logging: LoggingConfigSchema.optional(),
     ticketLogging: TicketLoggingSchema.optional(),
     enableLogging: z.boolean().optional(),
-    verification: VerificationConfigSchema
+    verification: VerificationConfigSchema,
+    honeypot: HoneypotConfigSchema
   })
   .passthrough();
 

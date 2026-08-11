@@ -28,6 +28,7 @@ TitanBot offers a complete suite of tools for Discord server management and comm
 - **Mass Actions** - Bulk ban/kick capabilities
 - **User Notes** - Keep detailed moderation records
 - **Case Management** - View and track all mod actions
+- **Honeypot** - Bait channel that catches spam bots; anyone who messages there is softbanned (kicked) and counted
 
 ### Economy System
 - **Shop & Inventory** - Buy and manage items
@@ -91,6 +92,36 @@ TitanBot offers a complete suite of tools for Discord server management and comm
 </td>
 </tr>
 </table>
+
+<a name="honeypot"></a>
+## Honeypot (Spam Bot Trap)
+
+The honeypot posts a warning embed in a channel of your choice. Any message sent there
+(bot or human) is deleted and the author is **softbanned** (kicked). Every kick increments
+the counter in the embed footer.
+
+```
+/honeypot setup [channel]   Post the honeypot embed (defaults to the current channel)
+/honeypot text              Change the heading, description, counter label, icon, or color
+/honeypot status            Show the current honeypot configuration
+/honeypot remove            Delete the embed and disable the honeypot
+```
+
+The default embed style:
+
+```
+[icon] DO NOT SEND
+       MESSAGES IN THIS
+       CHANNEL
+
+This channel is used to catch spam bots. Any messages sent here will result in a **softban.**
+
+Kicks: 0
+```
+
+Requires the **Manage Server** permission. The bot needs **View Channel**, **Send Messages**,
+and **Embed Links** in the honeypot channel, plus **Kick Members** to softban offenders.
+Server owners and administrators are never kicked by the honeypot.
 
 <a name="quick-setup"></a>
 ## Quick Setup (Recommended for non-coders)

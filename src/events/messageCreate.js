@@ -12,6 +12,7 @@ import { getCommandPrefix, getBotMessage, isBotOwner, isCommandCategoryEnabled, 
 import { enforceAbuseProtection, formatCooldownDuration } from '../utils/abuseProtection.js';
 import { createEmbed } from '../utils/embeds.js';
 import { isCommandEnabled } from '../services/commandAccessService.js';
+import { handleHoneypotMessage } from '../services/honeypotService.js';
 import {
   getCountingGameConfig,
   saveCountingGameConfig,
@@ -26,7 +27,14 @@ export default {
   name: Events.MessageCreate,
   async execute(message, client) {
     try {
-      if (message.author.bot || !message.guild) return;
+      if (!message.guild) return;
+
+      const honeypotHandled = await handleHoneypotMessage(message, client);
+      if (honeypotHandled) {
+        return;
+      }
+
+      if (message.author.bot) return;
 
       logger.debug(`Message received from ${message.author.tag}: ${message.content}`);
 

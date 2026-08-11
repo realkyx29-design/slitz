@@ -31,6 +31,7 @@ const COMMAND_ERROR_SUBTYPES = {
   ticket: 'ticket_failed',
   serverstats: 'serverstats_failed',
   'server-stats': 'serverstats_failed',
+  honeypot: 'honeypot_failed',
   gcreate: 'giveaway_failed',
   'giveaway-create': 'giveaway_failed',
   gend: 'giveaway_failed',
