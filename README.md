@@ -214,6 +214,7 @@ If it says the AI is inactive, the message names the actual cause:
 | `still holds the example placeholder value` | `.env` was copied from `.env.example` but never edited. |
 | `AI_TICKETS_ENABLED is set to a false value` | The key is fine — the master switch is off. Set it to `true`. |
 | `401 Unauthorized` | The provider rejected the key (wrong/revoked key, or wrong provider for `AI_API_BASE_URL`). |
+| `400 Bad Request` | The provider rejected the request. The log now includes its safe error text plus the configured endpoint and model; correct `AI_API_BASE_URL` / `AI_TICKET_MODEL` if needed. Unsupported optional parameters are retried automatically with a minimal compatible request. |
 | `404` | Wrong `AI_API_BASE_URL`, or the model name doesn't exist on that provider. |
 | `429` | Out of quota / rate limited — check billing at your provider. |
 
