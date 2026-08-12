@@ -507,10 +507,25 @@ function classifyProviderError(error) {
 }
 
 /** Human-readable hint for the most common provider failures. */
+export function getProviderErrorMessage(error) {
+    const message = error?.response?.data?.error?.message
+        || error?.response?.data?.message
+        || error?.message
+        || '';
+    // Provider error text is logged for operators only. Collapse whitespace and
+    // cap it so an upstream HTML error page cannot flood the bot logs.
+    return String(message).replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
 export function describeProviderError(error) {
     const status = error?.response?.status;
-    const providerMessage = error?.response?.data?.error?.message || error?.response?.data?.message;
+    const providerMessage = getProviderErrorMessage(error);
 
+    if (status === 400) {
+        return providerMessage
+            ? `The provider rejected the request (400 Bad Request): ${providerMessage}. Check AI_API_BASE_URL and AI_TICKET_MODEL; this can also mean the provider does not support a request parameter.`
+            : 'The provider rejected the request (400 Bad Request). Check AI_API_BASE_URL and AI_TICKET_MODEL; the provider did not return a detailed error.';
+    }
     if (status === 401) {
         return 'The API key was rejected by the provider (401 Unauthorized). A Groq key (starts with gsk_) must go to api.groq.com — not OpenAI. Check that the key is active and matches AI_API_BASE_URL.';
     }
@@ -535,7 +550,7 @@ export function describeProviderError(error) {
     return providerMessage ? `Provider error: ${providerMessage}` : 'Unexpected provider failure.';
 }
 
-function noteProviderFailure(error) {
+function noteProviderFailure(error, config = null) {
     const { pauseMs } = classifyProviderError(error);
     const status = error?.response?.status;
     providerState.consecutiveFailures += 1;
@@ -554,8 +569,11 @@ function noteProviderFailure(error) {
 
     const details = {
         status: status ?? null,
-        message: error?.message,
+        message: getProviderErrorMessage(error),
         hint: providerState.lastError.hint,
+        // These values identify the broken provider setting without exposing the API key.
+        baseUrl: config?.baseUrl || null,
+        model: config?.model || null,
         consecutiveFailures: providerState.consecutiveFailures,
         pausedUntil: providerState.pausedUntil ? new Date(providerState.pausedUntil).toISOString() : null,
     };
@@ -648,6 +666,25 @@ export function stripCompatibilityParams(payload) {
 }
 
 /**
+ * Conservative fallback for providers which reject optional OpenAI fields.
+ * Keep the legacy token field here: some OpenAI-compatible hosts accept it but
+ * do not implement max_completion_tokens. This is tried only after a provider
+ * explicitly reports a compatibility-related 400.
+ */
+export function buildMinimalCompletionPayload(payload) {
+    const next = { ...payload };
+    delete next.temperature;
+    delete next.frequency_penalty;
+    delete next.presence_penalty;
+    delete next.reasoning_effort;
+    if (Object.prototype.hasOwnProperty.call(next, 'max_completion_tokens')) {
+        next.max_tokens = next.max_completion_tokens;
+        delete next.max_completion_tokens;
+    }
+    return next;
+}
+
+/**
  * Call the chat-completions endpoint. `transport` is injectable for tests;
  * it must be an async fn (url, payload, headers) -> response data.
  */
@@ -669,7 +706,13 @@ export async function requestAiCompletion({ messages, config, transport = null }
         });
 
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    let compatibilityFallbackUsed = false;
+    let minimalFallbackUsed = false;
+    // The first payload is the full OpenAI-compatible request. On an explicit
+    // unsupported-parameter 400, try both token-field conventions before giving
+    // up. This lets stricter compatible APIs work without weakening valid
+    // OpenAI/Groq requests or retrying ordinary bad-request configuration bugs.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
             const data = await send(url, payload, headers);
             const text = extractCompletionText(data);
@@ -681,8 +724,14 @@ export async function requestAiCompletion({ messages, config, transport = null }
         } catch (error) {
             lastError = error;
             const classified = classifyProviderError(error);
-            if (classified.compatibility) {
+            if (classified.compatibility && !compatibilityFallbackUsed) {
                 payload = stripCompatibilityParams(payload);
+                compatibilityFallbackUsed = true;
+                continue;
+            }
+            if (classified.compatibility && !minimalFallbackUsed) {
+                payload = buildMinimalCompletionPayload(payload);
+                minimalFallbackUsed = true;
                 continue;
             }
             if (!classified.retryable) {
@@ -1222,7 +1271,7 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
         }
 
         if (error) {
-            noteProviderFailure(error);
+            noteProviderFailure(error, aiConfig);
             await maybeNotifyOutage(channel, state);
             // If we have queued messages while we were failing, retry after short delay
             if (state.pendingNeedsReply) {

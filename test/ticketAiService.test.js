@@ -40,6 +40,7 @@ const {
     extractCompletionText,
     buildCompletionPayload,
     stripCompatibilityParams,
+    buildMinimalCompletionPayload,
     isReasoningModel,
     isStockExampleBaseUrl,
     GROQ_DEFAULT_MODEL,
@@ -609,4 +610,34 @@ test('requestAiCompletion retries once after an unsupported-parameter 400', asyn
     assert.equal(calls.length, 2);
     assert.ok(!('frequency_penalty' in calls[1]));
     assert.ok('max_completion_tokens' in stripCompatibilityParams(calls[0]));
+});
+
+test('requestAiCompletion tries a minimal legacy payload after two compatibility 400s', async () => {
+    const calls = [];
+    const transport = async (_url, payload) => {
+        calls.push(payload);
+        if ('max_tokens' in payload && 'frequency_penalty' in payload) {
+            const err = new Error('unsupported parameter: frequency_penalty');
+            err.response = { status: 400, data: { error: { message: 'Unsupported parameter: frequency_penalty' } } };
+            throw err;
+        }
+        if ('max_completion_tokens' in payload) {
+            const err = new Error('unsupported parameter: max_completion_tokens');
+            err.response = { status: 400, data: { error: { message: 'Unsupported parameter: max_completion_tokens' } } };
+            throw err;
+        }
+        return { choices: [{ message: { content: 'minimal payload worked' } }] };
+    };
+
+    const config = normalizeAiConfig({ AI_API_KEY: 'sk-test' });
+    const { text, error } = await requestAiCompletion({ messages: [], config, transport });
+
+    assert.equal(error, null);
+    assert.equal(text, 'minimal payload worked');
+    assert.equal(calls.length, 3);
+    assert.ok(!('temperature' in calls[2]));
+    assert.ok(!('frequency_penalty' in calls[2]));
+    assert.ok('max_tokens' in calls[2]);
+    assert.ok(!('max_completion_tokens' in calls[2]));
+    assert.ok(!('temperature' in buildMinimalCompletionPayload(stripCompatibilityParams(calls[0]))));
 });
