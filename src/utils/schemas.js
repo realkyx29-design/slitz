@@ -89,6 +89,7 @@ export const GuildConfigSchema = z
     logIgnore: LogIgnoreSchema.optional(),
     ticketAiEnabled: z.boolean().optional(),
     ticketAiNotifyUserId: z.string().nullable().optional(),
+    ticketAiLogsChannelId: z.string().nullable().optional(),
     disabledCommands: z.record(z.boolean()).optional(),
     disabledCategories: z.record(z.boolean()).optional(),
     logging: LoggingConfigSchema.optional(),

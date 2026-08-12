@@ -42,7 +42,7 @@ TitanBot offers a complete suite of tools for Discord server management and comm
 - **Text Reversal** - Reverse any text
 
 ### Advanced Ticket System
-- **AI Assistant** - Answers basic questions in tickets automatically (answer-only, no actions)
+- **AI Assistant** - Turns on automatically in every new ticket (answer-only, no actions)
 - **Request Human** - One-click escalation that pings staff and pauses the AI in that ticket
 - **Claim & Priority** - Staff ticket management
 - **Ticket Limits** - Prevent spam
@@ -134,7 +134,11 @@ TitanBot can answer basic questions inside support tickets automatically.
 - **Answer-only by design** — the assistant can *only* reply with text answers. It has no
   tools and can never give/remove roles, ban, kick, timeout, manage channels, change
   permissions, run commands, generate images, create files, or take any other action.
-- **Request Human button** — every AI-enabled ticket shows a **🧑‍💼 Request Human** button.
+- **Always on** — when a ticket is created, the assistant greets the user and starts answering.
+  There is no enable command.
+- **Player reports** — if the ticket looks like a player report, the assistant keeps asking until
+  the reporter gives a **username** and a **video** (upload or clip link).
+- **Request Human button** — every ticket shows a **🧑‍💼 Request Human** button.
   Clicking it pings the configured staff user and the AI **stops replying** in that ticket.
 - **Honest fallback** — if the AI doesn't know an answer or can't help, it says so and
   points the user to Request Human instead of making things up.
@@ -184,18 +188,22 @@ a hosting panel) are stripped automatically.
 > Groq's old default `llama-3.1-8b-instant` is shut down for free/developer
 > tiers on 2026-08-16. TitanBot now uses `openai/gpt-oss-20b`.
 
-Without a key the assistant stays off and the ticket system behaves exactly as before.
+Without a key, chat answers stay off. Player-report collection (username + video) and AI logs still work.
+
+### AI logs (player reports)
+
+Pick where the assistant should post report logs:
+
+```
+/ticket ai logs channel:#staff-ai-logs
+```
+
+That channel receives a log when a ticket looks like a **player report**, when the
+reporter adds a username or video, and when the report is ready for staff.
 
 ### Verifying / troubleshooting the key
 
-Run the built-in live check — it sends one tiny request to your provider and reports
-exactly what happened:
-
-```
-/ticket ai enabled:true test:true
-```
-
-The bot also prints the assistant's state on startup, e.g.
+The bot prints the assistant's state on startup, e.g.
 `🤖 Ticket AI: ready | key: AI_API_KEY (sk-a••••••6789) | model: gpt-4o-mini`.
 
 If it says the AI is inactive, the message names the actual cause:
@@ -217,12 +225,13 @@ empty — a blank value never shadows a real one.
 ### Managing it per server
 
 ```
-/ticket ai enabled:true                    Turn the assistant on/off for this server
-/ticket ai enabled:true notify_user:@User  Override who gets pinged on "Request Human"
+/ticket ai logs channel:#staff-ai-logs                 Where player-report logs are sent
+/ticket ai logs channel:#staff-ai-logs notify_user:@User  Also override the Request Human ping
 ```
 
-The AI only responds to the ticket creator (never to staff, bots, or commands), and only in
-open tickets where no human has been requested.
+The assistant turns on automatically in every new ticket. It only responds to the ticket
+creator (never to staff, bots, or commands), and only in open tickets where no human has
+been requested.
 
 <a name="quick-setup"></a>
 ## Quick Setup (Recommended for non-coders)
