@@ -20,6 +20,11 @@ services:
       - POSTGRES_SSL=false
       - AUTO_MIGRATE=true
       - LOG_LEVEL=${LOG_LEVEL:-warn}
+      - AI_TICKETS_ENABLED=${AI_TICKETS_ENABLED:-true}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - AI_API_BASE_URL=${AI_API_BASE_URL:-}
+      - AI_TICKET_MODEL=${AI_TICKET_MODEL:-}
       - LAVALINK_NODES_FILE=lavalink/nodes.json
       - PORT=3000
       - WEB_HOST=0.0.0.0
