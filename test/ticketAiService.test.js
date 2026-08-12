@@ -41,7 +41,10 @@ const {
     buildCompletionPayload,
     stripCompatibilityParams,
     buildMinimalCompletionPayload,
+    buildNoToolsCompletionPayload,
     isReasoningModel,
+    isQwenModel,
+    isToolUseConflictError,
     isStockExampleBaseUrl,
     GROQ_DEFAULT_MODEL,
     GROQ_DEFAULT_BASE_URL,
@@ -579,15 +582,141 @@ test('extractCompletionText handles string, parts, and empty shapes', () => {
 
 test('buildCompletionPayload skips penalties on reasoning models', () => {
     assert.equal(isReasoningModel('openai/gpt-oss-20b'), true);
+    assert.equal(isReasoningModel(GROQ_DEFAULT_MODEL), true);
     assert.equal(isReasoningModel('gpt-4o-mini'), false);
+    assert.equal(isQwenModel('qwen/qwen3.6-27b'), true);
+    assert.equal(isQwenModel('gpt-4o-mini'), false);
 
-    const groq = buildCompletionPayload({ model: GROQ_DEFAULT_MODEL }, []);
-    assert.equal(groq.reasoning_effort, 'low');
-    assert.ok(!('frequency_penalty' in groq));
+    // Groq default (Qwen): penalties skipped, reasoning_effort left unset —
+    // Groq Qwen models only accept 'none'/'default' for that field.
+    const qwen = buildCompletionPayload({ model: GROQ_DEFAULT_MODEL }, []);
+    assert.ok(!('frequency_penalty' in qwen));
+    assert.ok(!('presence_penalty' in qwen));
+    assert.ok(!('reasoning_effort' in qwen));
+
+    // gpt-oss (explicitly configured) still gets low reasoning effort.
+    const gptOss = buildCompletionPayload({ model: 'openai/gpt-oss-20b' }, []);
+    assert.equal(gptOss.reasoning_effort, 'low');
+    assert.ok(!('frequency_penalty' in gptOss));
 
     const openai = buildCompletionPayload({ model: 'gpt-4o-mini' }, []);
     assert.equal(openai.frequency_penalty, 0.4);
     assert.ok(!('reasoning_effort' in openai));
+});
+
+test('isToolUseConflictError recognises the Groq tool_use_failed 400', () => {
+    const groqError = new Error('bad request');
+    groqError.response = {
+        status: 400,
+        data: {
+            error: {
+                message: 'Tool choice is none, but model called a tool',
+                type: 'invalid_request_error',
+                code: 'tool_use_failed',
+                failed_generation: '{"name": "web_search", "arguments": {}}',
+            },
+        },
+    };
+    assert.equal(isToolUseConflictError(groqError), true);
+
+    const other400 = new Error('bad request');
+    other400.response = { status: 400, data: { error: { message: 'Model not found' } } };
+    assert.equal(isToolUseConflictError(other400), false);
+    assert.equal(isToolUseConflictError(new Error('network')), false);
+});
+
+test('requestAiCompletion retries with tool use disabled after a tool_use_failed 400', async () => {
+    const calls = [];
+    const transport = async (_url, payload) => {
+        calls.push(payload);
+        if (!('tool_choice' in payload)) {
+            const err = new Error('Tool choice is none, but model called a tool');
+            err.response = {
+                status: 400,
+                data: {
+                    error: {
+                        message: 'Tool choice is none, but model called a tool',
+                        code: 'tool_use_failed',
+                    },
+                },
+            };
+            throw err;
+        }
+        return { choices: [{ message: { content: 'no tools needed, works' } }] };
+    };
+
+    const config = normalizeAiConfig({ AI_API_KEY: 'sk-test' });
+    const { text, error } = await requestAiCompletion({ messages: [], config, transport });
+
+    assert.equal(error, null);
+    assert.equal(text, 'no tools needed, works');
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].tools, []);
+    assert.equal(calls[1].tool_choice, 'none');
+    assert.equal(calls[1].temperature, 0.2);
+});
+
+test('requestAiCompletion falls back to a minimal payload when tool use stays blocked', async () => {
+    const calls = [];
+    const transport = async (_url, payload) => {
+        calls.push(payload);
+        if ('tool_choice' in payload && 'temperature' in payload) {
+            const err = new Error('Tool choice is none, but model called a tool');
+            err.response = { status: 400, data: { error: { code: 'tool_use_failed' } } };
+            throw err;
+        }
+        if ('tool_choice' in payload) {
+            return { choices: [{ message: { content: 'minimal no-tools worked' } }] };
+        }
+        const err = new Error('Tool choice is none, but model called a tool');
+        err.response = { status: 400, data: { error: { code: 'tool_use_failed' } } };
+        throw err;
+    };
+
+    const config = normalizeAiConfig({ AI_API_KEY: 'sk-test' });
+    const { text, error } = await requestAiCompletion({ messages: [], config, transport });
+
+    assert.equal(error, null);
+    assert.equal(text, 'minimal no-tools worked');
+    assert.equal(calls.length, 3);
+    assert.ok(!('temperature' in calls[2]));
+    assert.deepEqual(calls[2].tools, []);
+    assert.equal(calls[2].tool_choice, 'none');
+    assert.ok('max_tokens' in calls[2]);
+});
+
+test('requestAiCompletion retries when the provider returns tool_calls with no text', async () => {
+    const calls = [];
+    const transport = async () => {
+        calls.push(1);
+        if (calls.length === 1) {
+            return {
+                choices: [{
+                    message: {
+                        content: null,
+                        tool_calls: [{ type: 'function', function: { name: 'web_search', arguments: '{}' } }],
+                    },
+                }],
+            };
+        }
+        return { choices: [{ message: { content: 'text-only answer' } }] };
+    };
+
+    const config = normalizeAiConfig({ AI_API_KEY: 'sk-test' });
+    const { text, error } = await requestAiCompletion({ messages: [], config, transport });
+
+    assert.equal(error, null);
+    assert.equal(text, 'text-only answer');
+    assert.equal(calls.length, 2);
+});
+
+test('buildNoToolsCompletionPayload pins tool use off', () => {
+    const base = buildCompletionPayload({ model: 'openai/gpt-oss-20b' }, []);
+    const noTools = buildNoToolsCompletionPayload(base);
+    assert.deepEqual(noTools.tools, []);
+    assert.equal(noTools.tool_choice, 'none');
+    assert.equal(noTools.temperature, 0.2);
+    assert.equal(noTools.model, 'openai/gpt-oss-20b');
 });
 
 test('requestAiCompletion retries once after an unsupported-parameter 400', async () => {

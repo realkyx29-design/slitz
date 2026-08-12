@@ -168,11 +168,11 @@ OpenAI. A provider-specific key already in your environment is also picked up
 
 | Variable | Default endpoint | Default model |
 | --- | --- | --- |
-| `AI_API_KEY` (`gsk_...`) | `https://api.groq.com/openai/v1` | `openai/gpt-oss-20b` |
+| `AI_API_KEY` (`gsk_...`) | `https://api.groq.com/openai/v1` | `qwen/qwen3.6-27b` |
 | `AI_API_KEY` (`sk-...`) | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | `openai/gpt-4o-mini` |
-| `GROQ_API_KEY` | `https://api.groq.com/openai/v1` | `openai/gpt-oss-20b` |
+| `GROQ_API_KEY` | `https://api.groq.com/openai/v1` | `qwen/qwen3.6-27b` |
 | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | `Llama-3.1-8B-Instruct-Turbo` |
 | `XAI_API_KEY` | `https://api.x.ai/v1` | `grok-2-latest` |
@@ -186,7 +186,12 @@ quotes, trailing newlines and stray whitespace (the usual result of pasting into
 a hosting panel) are stripped automatically.
 
 > Groq's old default `llama-3.1-8b-instant` is shut down for free/developer
-> tiers on 2026-08-16. TitanBot now uses `openai/gpt-oss-20b`.
+> tiers on 2026-08-16. TitanBot now uses `qwen/qwen3.6-27b` on Groq.
+> `openai/gpt-oss-20b` was tried first but **forces tool calling**: plain text
+> requests get rejected with HTTP 400 `tool_use_failed` ("Tool choice is none,
+> but model called a tool"). If you explicitly set `AI_TICKET_MODEL` to a
+> gpt-oss model, the bot automatically retries with tool use pinned off and a
+> lower temperature, but the Qwen default is the reliable choice.
 
 Without a key, chat answers stay off. Player-report collection (username + video) and AI logs still work.
 
@@ -214,7 +219,7 @@ If it says the AI is inactive, the message names the actual cause:
 | `still holds the example placeholder value` | `.env` was copied from `.env.example` but never edited. |
 | `AI_TICKETS_ENABLED is set to a false value` | The key is fine — the master switch is off. Set it to `true`. |
 | `401 Unauthorized` | The provider rejected the key (wrong/revoked key, or wrong provider for `AI_API_BASE_URL`). |
-| `400 Bad Request` | The provider rejected the request. The log now includes its safe error text plus the configured endpoint and model; correct `AI_API_BASE_URL` / `AI_TICKET_MODEL` if needed. Unsupported optional parameters are retried automatically with a minimal compatible request. |
+| `400 Bad Request` | The provider rejected the request. The log now includes its safe error text plus the configured endpoint and model; correct `AI_API_BASE_URL` / `AI_TICKET_MODEL` if needed. Unsupported optional parameters are retried automatically with a minimal compatible request. `Tool choice is none, but model called a tool` (Groq `tool_use_failed`) is retried automatically with tool use pinned off; if it persists, switch `AI_TICKET_MODEL` to `qwen/qwen3.6-27b`. |
 | `404` | Wrong `AI_API_BASE_URL`, or the model name doesn't exist on that provider. |
 | `429` | Out of quota / rate limited — check billing at your provider. |
 

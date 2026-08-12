@@ -148,7 +148,7 @@ async function fetchTicketPanelMessages(channel) {
     for (const message of recent.values()) byId.set(message.id, message);
   }
 
-  const pinned = await channel.messages.fetchPinned().catch(() => null);
+  const pinned = await channel.messages.fetchPins().catch(() => null);
   if (pinned) {
     for (const message of pinned.values()) byId.set(message.id, message);
   }
