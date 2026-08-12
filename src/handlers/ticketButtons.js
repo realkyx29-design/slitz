@@ -196,11 +196,12 @@ const closeTicketHandler = {
 
       await interaction.showModal(modal);
     } catch (error) {
-      logger.error('Error closing ticket:', error);
-
-      if (!interaction.replied && !interaction.deferred) {
-        await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'Could not open ticket close form.' });
-      }
+      logger.error('Error opening ticket close form:', error);
+      await handleInteractionError(interaction, error, {
+        type: 'button',
+        handler: 'ticket_close',
+        customId: interaction.customId,
+      });
     }
   }
 };
@@ -223,11 +224,11 @@ const closeTicketModalHandler = {
       await interaction.editReply({ embeds: [successEmbed('Ticket Closed', 'This ticket has been closed.')] });
     } catch (error) {
       logger.error('Error submitting close ticket modal:', error);
-      if (!interaction.replied && !interaction.deferred) {
-        await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'An error occurred while closing the ticket.' });
-      } else if (interaction.deferred) {
-        await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'An error occurred while closing the ticket.' });
-      }
+      await handleInteractionError(interaction, error, {
+        type: 'modal',
+        handler: 'ticket_close_modal',
+        customId: interaction.customId,
+      });
     }
   }
 };
@@ -489,11 +490,11 @@ const deleteTicketHandler = {
       await interaction.editReply({ embeds: [successEmbed('Ticket Deleted', 'This ticket will be deleted shortly.')] });
     } catch (error) {
       logger.error('Error deleting ticket:', error);
-      if (!interaction.replied && !interaction.deferred) {
-        await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'An error occurred while deleting the ticket.' });
-      } else if (interaction.deferred) {
-        await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'An error occurred while deleting the ticket.' });
-      }
+      await handleInteractionError(interaction, error, {
+        type: 'button',
+        handler: 'ticket_delete',
+        customId: interaction.customId,
+      });
     }
   }
 };

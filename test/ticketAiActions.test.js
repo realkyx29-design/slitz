@@ -15,6 +15,7 @@ const {
     buildWarningMessage,
     canAiModerateMember,
     countAiWarningsForUser,
+    detectClearTrolling,
     evaluateTrollOutcome,
     getAiWarnings,
     parseAiActions,
@@ -141,6 +142,39 @@ test('warnings are counted per user, not per ticket', () => {
     assert.equal(countAiWarningsForUser(ticket, 'b'), 1);
     assert.equal(countAiWarningsForUser(ticket, 'c'), 0);
     assert.equal(countAiWarningsForUser(ticket, null), 0);
+});
+
+test('clear trolling detection catches deliberate admissions and repeated spam', () => {
+    assert.deepEqual(detectClearTrolling({
+        ownerId: 'owner',
+        messages: [{ author: { id: 'owner', bot: false }, content: "I'm just trolling" }],
+    }), { warn: true, reason: 'deliberate trolling or wasting support time' });
+
+    assert.deepEqual(detectClearTrolling({
+        ownerId: 'owner',
+        messages: [
+            { author: { id: 'owner', bot: false }, content: 'spam me' },
+            { author: { id: 'owner', bot: false }, content: 'spam me' },
+            { author: { id: 'owner', bot: false }, content: 'spam me' },
+        ],
+    }), { warn: true, reason: 'repeated spam messages' });
+
+    assert.deepEqual(detectClearTrolling({
+        ownerId: 'owner',
+        messages: [
+            { author: { id: 'owner', bot: false }, content: 'shut up bot' },
+            { author: { id: 'owner', bot: false }, content: 'you are an idiot' },
+            { author: { id: 'owner', bot: false }, content: 'fuck this ticket' },
+        ],
+    }), { warn: true, reason: 'repeated abusive messages' });
+});
+
+test('clear trolling detection does not warn on one rude or frustrated message', () => {
+    const result = detectClearTrolling({
+        ownerId: 'owner',
+        messages: [{ author: { id: 'owner', bot: false }, content: 'This is frustrating, please help me!' }],
+    });
+    assert.deepEqual(result, { warn: false, reason: null });
 });
 
 // ---------------------------------------------------------------------------

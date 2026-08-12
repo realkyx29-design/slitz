@@ -131,9 +131,11 @@ Server owners and administrators are never kicked by the honeypot.
 
 TitanBot can answer basic questions inside support tickets automatically.
 
-- **Answer-only by design** — the assistant can *only* reply with text answers. It has no
-  tools and can never give/remove roles, ban, kick, timeout, manage channels, change
-  permissions, run commands, generate images, create files, or take any other action.
+- **Answer-first by design** — the assistant replies with text and has no tools. Its only
+  safety-scoped side effects are closing a resolved ticket and warning the ticket creator
+  for clear, deliberate misuse; it can never give/remove roles, ban, timeout, manage
+  channels, change permissions, run commands, generate images, create files, or take any
+  other action. Three AI warnings are required before a kick is considered.
 - **Always on** — when a ticket is created, the assistant greets the user and starts answering.
   There is no enable command.
 - **Player reports** — if the ticket looks like a player report, the assistant keeps asking until
@@ -193,7 +195,7 @@ a hosting panel) are stripped automatically.
 > gpt-oss model, the bot automatically retries with tool use pinned off and a
 > lower temperature, but the Qwen default is the reliable choice.
 
-Without a key, chat answers stay off. Player-report collection (username + video) and AI logs still work.
+Without a key, chat answers stay off. Player-report collection (username + video) and AI logs still work. Clear, deliberate spam/trolling still receives the same guarded AI warning flow when the assistant is enabled, so a provider refusing to emit an action token cannot silently disable warnings.
 
 ### AI logs (player reports)
 
