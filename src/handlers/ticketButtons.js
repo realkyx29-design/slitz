@@ -9,16 +9,6 @@ import { checkRateLimit } from '../utils/rateLimiter.js';
 import { replyUserError, ErrorTypes, handleInteractionError, createError } from '../utils/errorHandler.js';
 import { getTicketPermissionContext } from '../utils/ticket/ticketPermissions.js';
 
-function escapeHtml(text) {
-  if (!text) return '';
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
 async function ensureGuildContext(interaction) {
   if (interaction.inGuild()) {
     return true;
@@ -398,13 +388,17 @@ const pinTicketHandler = {
         });
       }
 
+      const { resolveTicketNumber } = await import('../services/ticket.js');
+      const { getTicketData } = await import('../utils/database.js');
+      const pinTicketData = await getTicketData(interaction.guildId, channel.id).catch(() => null);
+
       await logTicketEvent({
         client: interaction.client,
         guildId: interaction.guildId,
         event: {
           type: hasPingEmoji ? 'unpin' : 'pin',
           ticketId: channel.id,
-          ticketNumber: channel.name.replace(/[^0-9]/g, ''),
+          ticketNumber: resolveTicketNumber(pinTicketData, channel),
           userId: interaction.user.id,
           executorId: interaction.user.id,
           metadata: {

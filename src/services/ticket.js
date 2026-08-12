@@ -12,7 +12,7 @@ import { buildStandardLogEmbed, formatLogLine } from '../utils/logging/logEmbeds
 import { getGuildConfig } from './config/guildConfig.js';
 import { getTicketData, saveTicketData, deleteTicketData, getOpenTicketCountForUser, incrementTicketCounter } from '../utils/database.js';
 import { logger } from '../utils/logger.js';
-import { createEmbed, errorEmbed } from '../utils/embeds.js';
+import { createEmbed } from '../utils/embeds.js';
 import { logTicketEvent } from '../utils/ticket/ticketLogging.js';
 import { createError, ErrorTypes } from '../utils/errorHandler.js';
 import { ensureTypedServiceError, wrapServiceBoundary } from '../utils/serviceErrorBoundary.js';
@@ -47,6 +47,27 @@ function rethrowTicketError(error, operation, userMessage, context = {}) {
     userMessage,
     context,
   });
+}
+
+/**
+ * Resolve the human-facing ticket number for logs.
+ *
+ * Tickets created before `number` was persisted fall back to the digits in the
+ * channel name (`ticket-007` -> `007`), and finally to the channel id, so log
+ * embeds stay consistent instead of mixing padded numbers and snowflakes.
+ */
+export function resolveTicketNumber(ticketData, channel = null) {
+  if (ticketData?.number) {
+    return String(ticketData.number);
+  }
+
+  const name = channel?.name || '';
+  const digits = name.replace(/[^0-9]/g, '');
+  if (digits) {
+    return digits;
+  }
+
+  return ticketData?.id || channel?.id || null;
 }
 
 
@@ -105,6 +126,34 @@ export function buildTicketControlRows({
   }
 
   return rows;
+}
+
+/**
+ * Collect the messages the ticket helpers need to reconcile (control panel,
+ * claim banner, close banner).
+ *
+ * `channel.messages.fetch()` without options only returns the most recent 50
+ * messages, so on a busy ticket the pinned control panel scrolls out of range
+ * and every later edit silently no-ops (status stuck on "Open", buttons never
+ * disabled). Pinned messages are merged in so the panel is always found.
+ *
+ * @param {import('discord.js').TextChannel} channel
+ * @returns {Promise<import('discord.js').Message[]>} newest-first, de-duplicated
+ */
+async function fetchTicketPanelMessages(channel) {
+  const byId = new Map();
+
+  const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (recent) {
+    for (const message of recent.values()) byId.set(message.id, message);
+  }
+
+  const pinned = await channel.messages.fetchPinned().catch(() => null);
+  if (pinned) {
+    for (const message of pinned.values()) byId.set(message.id, message);
+  }
+
+  return [...byId.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
 }
 
 export const getUserTicketCount = wrapServiceBoundary(async function getUserTicketCount(guildId, userId) {
@@ -196,6 +245,10 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
     
     const ticketData = {
       id: channel.id,
+      // Human-facing ticket number (e.g. "007"). Persisted so every later log
+      // entry can reference the same number instead of falling back to the
+      // raw channel snowflake.
+      number: ticketNumber,
       userId: member.id,
       guildId: guild.id,
       createdAt: new Date().toISOString(),
@@ -205,6 +258,7 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
       reason,
       humanRequested: false,
       aiReplyCount: 0,
+      aiWarnings: [],
       aiIntake: null,
     };
 
@@ -212,8 +266,10 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
 
     const priorityInfo = PRIORITY_MAP[priority] || PRIORITY_MAP.none;
 
-    const showAiControls = true;
-    const aiHint = '\n\nOur AI assistant is on automatically. It will answer questions here and, for player reports, collect a **username** and **video**. Need a real person? Press **Request Human** anytime.';
+    const showAiControls = isAiActiveForGuild(config);
+    const aiHint = showAiControls
+      ? '\n\nOur AI assistant is on automatically. It will answer questions here and, for player reports, collect a **username** and **video**. Need a real person? Press **Request Human** anytime.'
+      : '';
 
     const embed = createEmbed({
       title: `Ticket #${ticketNumber}`,
@@ -242,18 +298,22 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
 
     await ticketMessage.pin().catch(() => {});
 
-    startTicketAiIntake({
-      channel,
-      ticketData,
-      guildConfig: config,
-      client: guild.client,
-    }).catch((error) => {
-      logger.warn('Ticket AI intake failed to start', {
-        channelId: channel.id,
-        guildId: guild.id,
-        error: error.message,
+    // Only greet/intake when the assistant is actually enabled for this guild —
+    // otherwise the ticket opened with an AI greeting that nothing would follow up on.
+    if (showAiControls) {
+      startTicketAiIntake({
+        channel,
+        ticketData,
+        guildConfig: config,
+        client: guild.client,
+      }).catch((error) => {
+        logger.warn('Ticket AI intake failed to start', {
+          channelId: channel.id,
+          guildId: guild.id,
+          error: error.message,
+        });
       });
-    });
+    }
     
     await logTicketEvent({
       client: guild.client,
@@ -295,6 +355,11 @@ export async function closeTicket(channel, closer, reason = 'No reason provided'
     ticketData.closeReason = reason;
     
     await saveTicketData(channel.guild.id, channel.id, ticketData);
+
+    // Cancel any debounced AI reply/typing timers for this channel. Without
+    // this a pending reply fires seconds after the close and posts into a
+    // ticket the user can no longer respond in.
+    clearTicketAiState(channel.id);
 
     if (closedCategoryId && channel.parentId !== closedCategoryId) {
       const closedCategory = channel.guild.channels.cache.get(closedCategoryId)
@@ -387,7 +452,7 @@ export async function closeTicket(channel, closer, reason = 'No reason provided'
         logger.warn(`Could not update user permissions for closed ticket: ${permError.message}`);
     }
     
-    const messages = await channel.messages.fetch();
+    const messages = await fetchTicketPanelMessages(channel);
     const ticketMessage = messages.find(m => 
       m.embeds.length > 0 && 
       m.embeds[0].title?.startsWith('Ticket #')
@@ -443,7 +508,7 @@ components: []
       event: {
         type: 'close',
         ticketId: channel.id,
-        ticketNumber: ticketData.id,
+        ticketNumber: resolveTicketNumber(ticketData, channel),
         userId: ticketData.userId,
         executorId: closer.id,
         reason: reason,
@@ -482,7 +547,7 @@ export async function claimTicket(channel, claimer) {
 
     await saveTicketData(channel.guild.id, channel.id, ticketData);
 
-    const messages = await channel.messages.fetch();
+    const messages = await fetchTicketPanelMessages(channel);
     const ticketMessage = messages.find(m =>
       m.embeds.length > 0 &&
       m.embeds[0].title?.startsWith('Ticket #')
@@ -540,7 +605,7 @@ export async function claimTicket(channel, claimer) {
       event: {
         type: 'claim',
         ticketId: channel.id,
-        ticketNumber: ticketData.id,
+        ticketNumber: resolveTicketNumber(ticketData, channel),
         userId: ticketData.userId,
         executorId: claimer.id,
         metadata: {
@@ -587,9 +652,14 @@ export async function requestHumanSupport(channel, requester) {
 
     await saveTicketData(channel.guild.id, channel.id, ticketData);
 
+    // Stop the assistant immediately. Without this, a reply that was already
+    // debounced before the button press still lands after the escalation
+    // notice, which looks like the AI ignoring the request for a human.
+    clearTicketAiState(channel.id);
+
     // Reflect the escalation on the pinned control message (Request Human becomes disabled).
     try {
-      const messages = await channel.messages.fetch();
+      const messages = await fetchTicketPanelMessages(channel);
       const ticketMessage = messages.find(m =>
         m.embeds.length > 0 &&
         m.embeds[0].title?.startsWith('Ticket #')
@@ -633,7 +703,7 @@ export async function requestHumanSupport(channel, requester) {
       event: {
         type: 'human_requested',
         ticketId: channel.id,
-        ticketNumber: ticketData.id,
+        ticketNumber: resolveTicketNumber(ticketData, channel),
         userId: ticketData.userId,
         executorId: requester.id,
         metadata: {
@@ -672,8 +742,17 @@ export async function reopenTicket(channel, reopener) {
     ticketData.closedBy = null;
     ticketData.closedAt = null;
     ticketData.closeReason = null;
-    
+    ticketData.reopenedBy = reopener.id;
+    ticketData.reopenedAt = new Date().toISOString();
+    // Give the assistant a fresh budget for the reopened conversation, otherwise
+    // a ticket that hit the per-ticket reply cap comes back permanently silent.
+    ticketData.aiReplyCount = 0;
+    ticketData.aiLastReplyAt = null;
+
     await saveTicketData(channel.guild.id, channel.id, ticketData);
+
+    // Discard stale debounce/duplicate-suppression state from before the close.
+    clearTicketAiState(channel.id);
 
     if (openCategoryId && channel.parentId !== openCategoryId) {
       const openCategory = channel.guild.channels.cache.get(openCategoryId)
@@ -707,7 +786,7 @@ export async function reopenTicket(channel, reopener) {
       logger.warn(`Could not restore access for user ${ticketData.userId}:`, error.message);
     }
     
-    const messages = await channel.messages.fetch();
+    const messages = await fetchTicketPanelMessages(channel);
     const ticketMessage = messages.find(m => 
       m.embeds.length > 0 && 
       m.embeds[0].title?.startsWith('Ticket #')
@@ -752,22 +831,28 @@ export async function reopenTicket(channel, reopener) {
     } else {
       await channel.send({ embeds: [reopenEmbed] });
     }
-    
+
+    await logTicketEvent({
+      client: channel.client,
+      guildId: channel.guild.id,
+      event: {
+        type: 'reopen',
+        ticketId: channel.id,
+        ticketNumber: resolveTicketNumber(ticketData, channel),
+        userId: ticketData.userId,
+        executorId: reopener.id,
+        metadata: {
+          reopenedAt: ticketData.reopenedAt,
+          movedToOpenCategory,
+        },
+      },
+    });
+
     return { ticketData, movedToOpenCategory, openCategoryMoveFailed };
     
   } catch (error) {
     rethrowTicketError(error, 'reopenTicket', 'Failed to reopen ticket. Please try again in a moment.', { guildId: channel?.guild?.id, channelId: channel?.id, reopenerId: reopener?.id });
   }
-}
-
-function escapeHtml(text) {
-  if (!text) return '';
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 }
 
 async function generateTranscript(channel) {
@@ -874,7 +959,7 @@ export async function deleteTicket(channel, deleter) {
       event: {
         type: 'delete',
         ticketId: channel.id,
-        ticketNumber: ticketData.id,
+        ticketNumber: resolveTicketNumber(ticketData, channel),
         userId: ticketData.userId,
         executorId: deleter.id,
         metadata: {
@@ -898,18 +983,18 @@ export async function deleteTicket(channel, deleter) {
           if (attachment) {
             logger.info('Transcript generated successfully, attempting to send', {
               channelId: channel.id,
-              ticketNumber: ticketData.id
+              ticketNumber: resolveTicketNumber(ticketData, channel)
             });
           } else {
             logger.warn('Transcript generation returned null', {
               channelId: channel.id,
-              ticketNumber: ticketData.id
+              ticketNumber: resolveTicketNumber(ticketData, channel)
             });
           }
         } catch (transcriptError) {
           logger.error('Error during transcript generation', {
             channelId: channel.id,
-            ticketNumber: ticketData.id,
+            ticketNumber: resolveTicketNumber(ticketData, channel),
             error: transcriptError.message
           });
         }
@@ -920,7 +1005,7 @@ export async function deleteTicket(channel, deleter) {
             if (!guildConfig.ticketTranscriptChannelId) {
               logger.warn('No transcript channel configured, skipping transcript send', {
                 channelId: channel.id,
-                ticketNumber: ticketData.id
+                ticketNumber: resolveTicketNumber(ticketData, channel)
               });
             } else {
               const transcriptChannel = await channel.client.channels.fetch(guildConfig.ticketTranscriptChannelId).catch(() => null);
@@ -958,7 +1043,7 @@ export async function deleteTicket(channel, deleter) {
 
                 logger.info('✅ Transcript sent successfully', {
                   channelId: channel.id,
-                  ticketNumber: ticketData.id,
+                  ticketNumber: resolveTicketNumber(ticketData, channel),
                   transcriptChannelId: transcriptChannel.id
                 });
               }
@@ -966,10 +1051,22 @@ export async function deleteTicket(channel, deleter) {
           } catch (sendError) {
             logger.error('Failed to send transcript to channel:', {
               channelId: channel.id,
-              ticketNumber: ticketData.id,
+              ticketNumber: resolveTicketNumber(ticketData, channel),
               error: sendError.message
             });
           }
+        }
+
+        // Drop the persisted record before the channel disappears, otherwise
+        // the row leaks forever (nothing else ever called deleteTicketData).
+        try {
+          await deleteTicketData(channel.guild.id, channel.id);
+        } catch (dbError) {
+          logger.warn('Failed to remove ticket record from the database', {
+            channelId: channel.id,
+            guildId: channel.guild?.id,
+            error: dbError.message,
+          });
         }
 
         try {
@@ -977,13 +1074,13 @@ export async function deleteTicket(channel, deleter) {
           logger.info('✅ Channel deleted', {
             channelId: channel.id,
             channelName: channel.name,
-            ticketNumber: ticketData.id
+            ticketNumber: resolveTicketNumber(ticketData, channel)
           });
         } catch (deleteError) {
           logger.error('❌ Failed to delete ticket channel:', {
             channelId: channel.id,
             channelName: channel.name,
-            ticketNumber: ticketData.id,
+            ticketNumber: resolveTicketNumber(ticketData, channel),
             errorMessage: deleteError.message,
             errorCode: deleteError.code,
             errorName: deleteError.name
@@ -993,7 +1090,7 @@ export async function deleteTicket(channel, deleter) {
         logger.error('❌ Unexpected error during ticket deletion:', {
           channelId: channel.id,
           channelName: channel?.name,
-          ticketNumber: ticketData?.id,
+          ticketNumber: resolveTicketNumber(ticketData, channel),
           errorMessage: error.message,
           errorName: error.name,
           errorStack: error.stack
@@ -1038,7 +1135,7 @@ export async function unclaimTicket(channel, unclaimer) {
 
     await saveTicketData(channel.guild.id, channel.id, ticketData);
 
-    const messages = await channel.messages.fetch();
+    const messages = await fetchTicketPanelMessages(channel);
     const ticketMessage = messages.find(m =>
       m.embeds.length > 0 &&
       m.embeds[0].title?.startsWith('Ticket #')
@@ -1096,7 +1193,7 @@ export async function unclaimTicket(channel, unclaimer) {
       event: {
         type: 'unclaim',
         ticketId: channel.id,
-        ticketNumber: ticketData.id,
+        ticketNumber: resolveTicketNumber(ticketData, channel),
         userId: ticketData.userId,
         executorId: unclaimer.id,
         metadata: {
@@ -1152,7 +1249,7 @@ export async function updateTicketPriority(channel, priority, updater) {
       }
     }
     
-    const messages = await channel.messages.fetch();
+    const messages = await fetchTicketPanelMessages(channel);
     const ticketMessage = messages.find(m => 
       m.embeds.length > 0 && 
       m.embeds[0].title?.startsWith('Ticket #')
@@ -1186,7 +1283,7 @@ export async function updateTicketPriority(channel, priority, updater) {
       event: {
         type: 'priority',
         ticketId: channel.id,
-        ticketNumber: ticketData.id,
+        ticketNumber: resolveTicketNumber(ticketData, channel),
         userId: ticketData.userId,
         executorId: updater.id,
         priority: priority,

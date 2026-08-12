@@ -13,6 +13,20 @@ import {
 
 const LOG_DESTINATIONS = ['audit', 'applications', 'reports'];
 
+/**
+ * Ticket logging historically lived entirely under `/ticket dashboard` with its
+ * own top-level config keys, so `/logging` could not see or set it. These
+ * destinations are exposed through the same `setLogChannel` entry point so
+ * every log channel in the bot is configurable from one command.
+ */
+const TICKET_LOG_DESTINATIONS = {
+  'ticket-events': 'ticketLogsChannelId',
+  'ticket-transcripts': 'ticketTranscriptChannelId',
+  'ticket-ai': 'ticketAiLogsChannelId',
+};
+
+const ALL_LOG_DESTINATIONS = [...LOG_DESTINATIONS, ...Object.keys(TICKET_LOG_DESTINATIONS)];
+
 const EVENT_TYPES = {
   MODERATION_BAN: 'moderation.ban',
   MODERATION_KICK: 'moderation.kick',
@@ -393,6 +407,18 @@ export async function toggleEventLogging(client, guildId, eventTypes, enabled) {
 }
 
 export async function setLogChannel(client, guildId, destination, channelId) {
+  if (TICKET_LOG_DESTINATIONS[destination]) {
+    try {
+      await updateGuildConfig(client, guildId, {
+        [TICKET_LOG_DESTINATIONS[destination]]: channelId,
+      });
+      return true;
+    } catch (error) {
+      logger.error('Error setting ticket log channel:', error);
+      return false;
+    }
+  }
+
   if (!LOG_DESTINATIONS.includes(destination)) {
     throw new Error(`Invalid log destination: ${destination}`);
   }
@@ -467,4 +493,4 @@ export function resolveApplicationLogChannel(config, roleSettings = {}, appSetti
     || null;
 }
 
-export { EVENT_TYPES, EVENT_COLORS, EVENT_ICONS, LOG_DESTINATIONS };
+export { EVENT_TYPES, EVENT_COLORS, EVENT_ICONS, LOG_DESTINATIONS, TICKET_LOG_DESTINATIONS, ALL_LOG_DESTINATIONS };

@@ -32,6 +32,8 @@ export const DEFAULT_GUILD_CONFIG = {
     autoRole: null,
     ticketAiEnabled: true,
     ticketAiNotifyUserId: null,
+    ticketLogsChannelId: null,
+    ticketTranscriptChannelId: null,
     ticketAiLogsChannelId: null,
     logging: {
         enabled: false,

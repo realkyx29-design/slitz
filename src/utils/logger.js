@@ -197,27 +197,17 @@ const logger = createLogger({
   ],
 });
 
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new transports.Console({
-    format: combine(
-      colorize(),
-      timestamp({ format: 'HH:mm:ss' }),
-      errors({ stack: true }),
-      logFormat
-    ),
-    level: resolvedLogLevel,
-  }));
-} else {
-  logger.add(new transports.Console({
-    format: combine(
-      colorize(),
-      timestamp({ format: 'HH:mm:ss' }),
-      errors({ stack: true }),
-      logFormat
-    ),
-    level: resolvedLogLevel,
-  }));
-}
+// Console output is wanted in every environment (containers/PaaS collect stdout),
+// so this is a single unconditional transport rather than two identical branches.
+logger.add(new transports.Console({
+  format: combine(
+    colorize(),
+    timestamp({ format: 'HH:mm:ss' }),
+    errors({ stack: true }),
+    logFormat
+  ),
+  level: resolvedLogLevel,
+}));
 
 logger.stream = {
   write: (message) => {

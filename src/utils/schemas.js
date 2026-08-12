@@ -29,10 +29,15 @@ export const LoggingConfigSchema = z
   })
   .default({ enabled: false, enabledEvents: {} });
 
+// Legacy nested shape. The canonical home for these channels is the top-level
+// ticketLogsChannelId / ticketTranscriptChannelId / ticketAiLogsChannelId keys
+// that every runtime read path uses; anything still stored here is migrated up
+// by `migrateTicketLoggingConfig` and then dropped.
 const TicketLoggingSchema = z
   .object({
     lifecycleChannelId: z.string().nullable().optional(),
-    transcriptChannelId: z.string().nullable().optional()
+    transcriptChannelId: z.string().nullable().optional(),
+    aiLogsChannelId: z.string().nullable().optional()
   })
   .optional();
 
@@ -89,6 +94,8 @@ export const GuildConfigSchema = z
     logIgnore: LogIgnoreSchema.optional(),
     ticketAiEnabled: z.boolean().optional(),
     ticketAiNotifyUserId: z.string().nullable().optional(),
+    ticketLogsChannelId: z.string().nullable().optional(),
+    ticketTranscriptChannelId: z.string().nullable().optional(),
     ticketAiLogsChannelId: z.string().nullable().optional(),
     disabledCommands: z.record(z.boolean()).optional(),
     disabledCategories: z.record(z.boolean()).optional(),
@@ -198,6 +205,40 @@ export function stripLegacyLoggingFields(config) {
   return rest;
 }
 
+/**
+ * Fold the legacy `ticketLogging.*` block into the canonical top-level ticket
+ * log channel keys.
+ *
+ * Two rival key sets existed for the same three channels, so a guild that had
+ * been configured through the older nested shape looked "unconfigured" to
+ * `getTicketLoggingConfig` and silently dropped every ticket log. Top-level
+ * values always win; the nested block is removed once migrated.
+ *
+ * @param {Record<string, any>} config mutated in place
+ * @returns {Record<string, any>} the same object
+ */
+function migrateTicketLoggingConfig(config) {
+  const nested = config?.ticketLogging;
+  if (!nested || typeof nested !== 'object') {
+    return config;
+  }
+
+  const mapping = {
+    lifecycleChannelId: 'ticketLogsChannelId',
+    transcriptChannelId: 'ticketTranscriptChannelId',
+    aiLogsChannelId: 'ticketAiLogsChannelId',
+  };
+
+  for (const [legacyKey, canonicalKey] of Object.entries(mapping)) {
+    if (!config[canonicalKey] && nested[legacyKey]) {
+      config[canonicalKey] = nested[legacyKey];
+    }
+  }
+
+  delete config.ticketLogging;
+  return config;
+}
+
 export function normalizeGuildConfig(raw, defaults = {}) {
   const base = typeof raw === 'object' && raw !== null ? raw : {};
   const merged = { ...defaults, ...base };
@@ -219,7 +260,7 @@ export function normalizeGuildConfig(raw, defaults = {}) {
     logIgnore: normalized.logIgnore,
   });
 
-  return stripLegacyLoggingFields(normalized);
+  return stripLegacyLoggingFields(migrateTicketLoggingConfig(normalized));
 }
 
 export function normalizeEconomyData(raw, defaults = {}) {
