@@ -18,6 +18,7 @@ import { createError, ErrorTypes } from '../utils/errorHandler.js';
 import { ensureTypedServiceError, wrapServiceBoundary } from '../utils/serviceErrorBoundary.js';
 import { PRIORITY_MAP } from '../utils/helpers.js';
 import { isAiActiveForGuild, resolveHumanNotifyUserId, clearTicketAiState } from './ticketAI/aiSupportService.js';
+import { startTicketAiIntake } from './ticketAI/ticketIntake.js';
 const TICKET_DELETE_DELAY_MS = 3000;
 const TICKET_DELETE_DELAY_SECONDS = Math.floor(TICKET_DELETE_DELAY_MS / 1000);
 const TICKET_SERVICE = 'ticketService';
@@ -204,16 +205,15 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
       reason,
       humanRequested: false,
       aiReplyCount: 0,
+      aiIntake: null,
     };
 
     await saveTicketData(guild.id, channel.id, ticketData);
 
     const priorityInfo = PRIORITY_MAP[priority] || PRIORITY_MAP.none;
 
-    const showAiControls = isAiActiveForGuild(config);
-    const aiHint = showAiControls
-      ? '\n\n🤖 Our AI assistant answers basic questions here automatically. Need a real person? Press **🧑‍💼 Request Human** anytime.'
-      : '';
+    const showAiControls = true;
+    const aiHint = '\n\nOur AI assistant is on automatically. It will answer questions here and, for player reports, collect a **username** and **video**. Need a real person? Press **Request Human** anytime.';
 
     const embed = createEmbed({
       title: `Ticket #${ticketNumber}`,
@@ -241,6 +241,19 @@ export async function createTicket(guild, member, categoryId, reason = 'No reaso
     });
 
     await ticketMessage.pin().catch(() => {});
+
+    startTicketAiIntake({
+      channel,
+      ticketData,
+      guildConfig: config,
+      client: guild.client,
+    }).catch((error) => {
+      logger.warn('Ticket AI intake failed to start', {
+        channelId: channel.id,
+        guildId: guild.id,
+        error: error.message,
+      });
+    });
     
     await logTicketEvent({
       client: guild.client,

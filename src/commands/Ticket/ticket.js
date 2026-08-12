@@ -2,7 +2,7 @@ import { getColor } from '../../config/bot.js';
 import { SlashCommandBuilder, PermissionFlagsBits, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } from 'discord.js';
 import { createEmbed, successEmbed } from '../../utils/embeds.js';
 import { getGuildConfig, setGuildConfig, updateGuildConfig } from '../../services/config/guildConfig.js';
-import { getAiConfigStatus, maskApiKey, resolveHumanNotifyUserId, testAiConnection } from '../../services/ticketAI/aiSupportService.js';
+import { getAiConfigStatus, maskApiKey, resolveHumanNotifyUserId } from '../../services/ticketAI/aiSupportService.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 import { logger } from '../../utils/logger.js';
 import { handleInteractionError, replyUserError, ErrorTypes } from '../../utils/errorHandler.js';
@@ -39,13 +39,25 @@ export default {
                 )
                 .addBooleanOption((option) => option.setName('dm_on_close').setDescription('Send DM to user when their ticket is closed (default: true)').setRequired(false)),
         )
-        .addSubcommand((subcommand) =>
-            subcommand
+        .addSubcommandGroup((group) =>
+            group
                 .setName('ai')
-                .setDescription('Configure the ticket AI assistant and the "Request Human" escalation.')
-                .addBooleanOption((option) => option.setName('enabled').setDescription('Let the AI assistant answer basic questions in tickets').setRequired(true))
-                .addUserOption((option) => option.setName('notify_user').setDescription('User to ping when someone requests a human (optional override)').setRequired(false))
-                .addBooleanOption((option) => option.setName('test').setDescription('Send a live test request to verify the API key actually works').setRequired(false)),
+                .setDescription('Ticket AI assistant settings')
+                .addSubcommand((subcommand) =>
+                    subcommand
+                        .setName('logs')
+                        .setDescription('Pick the channel that receives ticket AI logs (player reports, missing evidence, etc.).')
+                        .addChannelOption((option) =>
+                            option
+                                .setName('channel')
+                                .setDescription('Channel where player-report and ticket AI logs will be sent')
+                                .addChannelTypes(ChannelType.GuildText)
+                                .setRequired(true),
+                        )
+                        .addUserOption((option) =>
+                            option.setName('notify_user').setDescription('User to ping when someone requests a human (optional override)').setRequired(false),
+                        ),
+                ),
         )
         .addSubcommand((subcommand) => subcommand.setName('dashboard').setDescription('Open the interactive ticket system dashboard')),
     category: 'ticket',
@@ -59,14 +71,15 @@ export default {
             return replyUserError(interaction, { type: ErrorTypes.PERMISSION, message: 'You need the `Manage Channels` permission for this action.' });
         }
 
+        const group = interaction.options.getSubcommandGroup(false);
         const subcommand = interaction.options.getSubcommand();
 
         if (subcommand === 'dashboard') {
             return ticketConfig.execute(interaction, config, client);
         }
 
-        if (subcommand === 'ai') {
-            return runAiConfig(interaction, client);
+        if (group === 'ai' && subcommand === 'logs') {
+            return runAiLogs(interaction, client);
         }
 
         if (subcommand === 'setup') {
@@ -75,12 +88,23 @@ export default {
     },
 };
 
-async function runAiConfig(interaction, client) {
-    const enabled = interaction.options.getBoolean('enabled', true);
+async function runAiLogs(interaction, client) {
+    const logChannel = interaction.options.getChannel('channel', true);
     const notifyUser = interaction.options.getUser('notify_user');
-    const runTest = interaction.options.getBoolean('test') === true;
 
-    const updates = { ticketAiEnabled: enabled };
+    const botMember = interaction.guild.members.me;
+    const permissions = logChannel.permissionsFor(botMember);
+    if (!permissions?.has(['ViewChannel', 'SendMessages', 'EmbedLinks'])) {
+        return replyUserError(interaction, {
+            type: ErrorTypes.PERMISSION,
+            message: `I need **View Channel**, **Send Messages**, and **Embed Links** in ${logChannel} to post AI logs there.`,
+        });
+    }
+
+    const updates = {
+        ticketAiEnabled: true,
+        ticketAiLogsChannelId: logChannel.id,
+    };
     if (notifyUser) {
         updates.ticketAiNotifyUserId = notifyUser.id;
     }
@@ -89,59 +113,40 @@ async function runAiConfig(interaction, client) {
 
     const savedConfig = await getGuildConfig(client, interaction.guildId);
     const aiStatus = getAiConfigStatus();
-    const aiConfig = aiStatus.config;
     const effectiveNotifyUserId = resolveHumanNotifyUserId(savedConfig);
 
     const lines = [
-        `**AI replies in tickets:** ${enabled ? '✅ Enabled' : '🚫 Disabled'}`,
+        `**AI logs channel:** ${logChannel}`,
         `**Request Human ping:** <@${effectiveNotifyUserId}>`,
+        '',
+        'The assistant turns on automatically in every new ticket. You do not need to enable it.',
+        '',
+        'I will post here when:',
+        '• A ticket looks like a **player report**',
+        '• The reporter sends a **username** or **video**',
+        '• The report is ready for staff (username + video collected)',
+        '',
+        'In player-report tickets the assistant will keep asking until they provide a username **and** a video (upload or clip link).',
     ];
 
-    if (enabled && !aiStatus.ok) {
-        lines.push(
-            '',
-            `⚠️ **The AI cannot reply yet** — ${aiStatus.summary}`,
-            '',
-            'The "Request Human" button still works in the meantime.',
-        );
-    } else if (enabled) {
-        lines.push(
-            '',
-            `**Model:** \`${aiConfig.model}\``,
-            `**Provider:** \`${aiConfig.baseUrl}\``,
-            `**API key:** ✅ loaded from \`${aiConfig.apiKeySource}\` (\`${maskApiKey(aiConfig.apiKey)}\`)`,
-            '',
-            'The assistant only answers questions in open tickets and stops when a human is requested.',
-        );
+    if (!aiStatus.ok) {
+        lines.push('', `⚠️ **Chat answers are paused** — ${aiStatus.summary}`, 'Evidence collection and these logs still work.');
     } else {
-        lines.push('', 'New tickets will no longer show the AI/Request Human controls. Existing tickets keep their current controls.');
-    }
-
-    // Optional live check — proves whether the key really works end to end.
-    if (runTest && enabled) {
-        const result = await testAiConnection();
-        lines.push('', '**🔍 Live connection test**');
-        lines.push(
-            result.ok
-                ? `✅ Success in ${result.latencyMs}ms — ${result.detail}`
-                : `❌ Failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ''} — ${result.detail}`,
-        );
-    } else if (runTest && !enabled) {
-        lines.push('', '*Skipped the live test because the assistant is disabled for this server.*');
+        lines.push('', `**Chat model:** \`${aiStatus.config.model}\`  •  **Key:** \`${maskApiKey(aiStatus.config.apiKey)}\``);
     }
 
     await InteractionHelper.safeEditReply(interaction, {
-        embeds: [successEmbed('Ticket AI Settings Updated', lines.join('\n'))],
+        embeds: [successEmbed('Ticket AI Logs Updated', lines.join('\n'))],
     });
 
-    logger.info('Ticket AI configuration updated', {
+    logger.info('Ticket AI logs channel updated', {
         guildId: interaction.guildId,
         userId: interaction.user.id,
-        enabled,
+        channelId: logChannel.id,
         notifyUserId: notifyUser?.id ?? null,
-        commandName: 'ticket_ai',
+        commandName: 'ticket_ai_logs',
     });
-};
+}
 
 async function runSetup(interaction, client) {
     const existingConfig = await getGuildConfig(client, interaction.guildId);
@@ -230,4 +235,4 @@ async function runSetup(interaction, client) {
             await handleInteractionError(interaction, error, { commandName: 'ticket_setup', source: 'ticket_setup_command' });
         }
     }
-};
+}

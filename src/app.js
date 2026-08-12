@@ -121,7 +121,7 @@ class TitanBot extends Client {
 
   /**
    * Report the ticket AI assistant's real state at boot so a missing/blocked key
-   * is obvious in the logs instead of only surfacing inside `/ticket ai`.
+   * is obvious in the logs instead of only surfacing when tickets stay quiet.
    */
   logAiStatus() {
     try {

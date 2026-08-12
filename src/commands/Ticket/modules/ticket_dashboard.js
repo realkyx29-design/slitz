@@ -153,7 +153,7 @@ function buildDashboardEmbed(config, guild, panelStatus = null, ticketStats = nu
             { name: 'DM on Close', value: config.dmOnClose !== false ? 'Enabled' : 'Disabled', inline: true },
             { name: 'Ticket Logs Channel', value: mention(config.ticketLogsChannelId), inline: true },
             { name: 'Transcript Channel', value: mention(config.ticketTranscriptChannelId), inline: true },
-            { name: '\u200B', value: '\u200B', inline: true },
+            { name: 'AI Logs Channel', value: mention(config.ticketAiLogsChannelId), inline: true },
             { name: 'Open Tickets', value: openTickets, inline: true },
             { name: 'Avg Close Time', value: avgCloseTime, inline: true },
             { name: 'Feedback Rating', value: feedbackSummary, inline: true },
@@ -170,6 +170,7 @@ const SETTING_OPTIONS = [
     { label: 'Set Max Tickets per User', description: 'Limit how many open tickets one user can have at once', value: 'max_tickets', emoji: '🔢' },
     { label: 'Set Ticket Logs Channel', description: 'Channel to receive ticket feedback, lifecycle events, and logs', value: 'logs_channel', emoji: '🎫' },
     { label: 'Set Transcript Channel', description: 'Channel to receive auto-generated transcripts on deletion', value: 'transcript_channel', emoji: '📜' },
+    { label: 'Set AI Logs Channel', description: 'Channel for player-report and ticket AI intake logs', value: 'ai_logs_channel', emoji: '🤖' },
 ];
 
 const buildSelectMenu = (guildId) =>
@@ -449,6 +450,25 @@ async function handleLogsChannel(selectInteraction, rootInteraction, guildConfig
     });
 }
 
+async function handleAiLogsChannel(selectInteraction, rootInteraction, guildConfig, guildId, client) {
+    await runSelectFlow({
+        selectInteraction, rootInteraction, guildConfig, guildId, client,
+        customId: 'ticket_cfg_ai_logs_channel',
+        componentType: ComponentType.ChannelSelect,
+        menu: channelSelectMenu('ticket_cfg_ai_logs_channel', 'Select a channel...'),
+        embedTitle: 'Select Ticket AI Logs Channel',
+        embedDescription: 'Choose where player-report detections, missing-evidence updates, and ready-for-staff notices will be sent. You can also set this with `/ticket ai logs`.',
+        getSelected: (i) => i.channels.first(),
+        onSave: async (channel) => {
+            guildConfig.ticketAiLogsChannelId = channel.id;
+            guildConfig.ticketAiEnabled = true;
+            await setGuildConfig(client, guildId, guildConfig);
+            return successEmbed('AI Logs Channel Updated', `Ticket AI logs will be sent to ${channel}`);
+        },
+        timeoutMessage: 'No channel selected. No changes were made.',
+    });
+}
+
 async function handleTranscriptChannel(selectInteraction, rootInteraction, guildConfig, guildId, client) {
     await runSelectFlow({
         selectInteraction, rootInteraction, guildConfig, guildId, client,
@@ -602,6 +622,7 @@ const SELECT_HANDLERS = {
     max_tickets: handleMaxTickets,
     logs_channel: handleLogsChannel,
     transcript_channel: handleTranscriptChannel,
+    ai_logs_channel: handleAiLogsChannel,
 };
 
 export default {

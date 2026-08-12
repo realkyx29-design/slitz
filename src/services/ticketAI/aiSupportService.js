@@ -17,6 +17,7 @@ import { checkRateLimit } from '../../utils/rateLimiter.js';
 import { parsePrefixCommand } from '../../utils/prefixParser.js';
 import { createEmbed } from '../../utils/embeds.js';
 import { logger } from '../../utils/logger.js';
+import { describeIntakeForPrompt, syncTicketIntake } from './ticketIntake.js';
 
 // ---------------------------------------------------------------------------
 // Constants / defaults
@@ -338,9 +339,14 @@ export function maskApiKey(key) {
     return `${value.slice(0, 4)}${'•'.repeat(6)}${value.slice(-4)}`;
 }
 
-/** AI answers in this guild's tickets unless the guild disabled it and the API key exists. */
-export function isAiActiveForGuild(guildConfig, env = process.env) {
-    return Boolean(isAiConfigured(env) && guildConfig?.ticketAiEnabled !== false);
+/** Ticket AI / intake is always on. The old per-server enable command is gone. */
+export function isAiActiveForGuild(_guildConfig, _env = process.env) {
+    return true;
+}
+
+/** True when the chat model can answer general questions (API key present). */
+export function canUseTicketLlm(env = process.env) {
+    return isAiConfigured(env);
 }
 
 export function resolveHumanNotifyUserId(guildConfig, env = process.env) {
@@ -378,6 +384,7 @@ export function buildSystemPrompt({ guildName = 'this server', ticketReason = nu
         '6. Never use @everyone, @here, or mention specific users/roles. Plain text only.',
         '7. Stay on-topic for server support. Refuse illegal, harmful, or NSFW requests with one short sentence.',
         '8. If the user explicitly asks for a human, staff, moderator, or real person, acknowledge politely and tell them to press the Request Human button.',
+        '9. If this is a player report, you must collect the reported player\'s username and a video (upload or clip link) before treating the report as complete. Ask for whichever of those is still missing. Do not invent a username.',
     ].filter(Boolean).join('\n');
 }
 
@@ -682,8 +689,7 @@ export async function requestAiCompletion({ messages, config, transport = null }
 
 /**
  * Live end-to-end check: does the configured key actually work right now?
- * Used by `/ticket ai` so operators get a definitive answer instead of guessing
- * whether their key is loaded. Sends one tiny completion.
+ * Live check used by diagnostics. Sends one tiny completion.
  */
 export async function testAiConnection({ env = process.env, transport = null } = {}) {
     const status = getAiConfigStatus(env);
@@ -915,10 +921,6 @@ export async function handleTicketAiMessage(message, client, env = process.env) 
             return false;
         }
 
-        if (!isAiConfigured(env)) {
-            return false;
-        }
-
         // Fetch ticket data + guild config early — this fixes the core bug where
         // we rejected based on channel name BEFORE checking DB. Now DB is authoritative.
         const [ticketData, guildConfig] = await Promise.all([
@@ -932,10 +934,6 @@ export async function handleTicketAiMessage(message, client, env = process.env) 
 
         // If neither DB says ticket nor name looks like ticket, skip quickly.
         if (!isNameTicket && !isDbTicket) {
-            return false;
-        }
-
-        if (!isAiActiveForGuild(guildConfig, env)) {
             return false;
         }
 
@@ -1095,22 +1093,6 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
         }
     }
 
-    // Provider circuit breaker — if paused, notify and skip.
-    const pauseRemaining = getProviderPauseRemainingMs();
-    if (pauseRemaining > 0) {
-        logger.debug(`Ticket AI: provider paused for ${Math.ceil(pauseRemaining / 1000)}s`, { channelId });
-        await maybeNotifyOutage(channel, state);
-        // If we have pending follow-up, schedule retry after pause expires
-        if (state.pendingNeedsReply) {
-            const retryAfter = Math.min(pauseRemaining + 1000, 30_000);
-            setTimeout(() => {
-                state.pendingNeedsReply = false;
-                scheduleTicketAiReply(channel, ticketDataSnapshot, client, guildConfig, aiConfig);
-            }, retryAfter);
-        }
-        return;
-    }
-
     state.inFlight = true;
     state.inFlightSince = Date.now();
     state.pendingNeedsReply = false;
@@ -1135,6 +1117,36 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
         }
         const chronological = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
+        const intake = await syncTicketIntake({
+            channel,
+            ticketData: freshTicket || ticketDataSnapshot,
+            guildConfig,
+            client,
+            messages: chronological,
+        });
+
+        if (intake?.followUp) {
+            const sentIntake = await sendAiEmbed(channel, intake.followUp);
+            if (sentIntake) {
+                state.lastReplyAt = Date.now();
+                state.lastReplyNormalized = normalizeReplyForComparison(intake.followUp);
+                const ticketToUpdate = freshTicket || ticketDataSnapshot;
+                if (ticketToUpdate) {
+                    ticketToUpdate.aiReplyCount = (ticketToUpdate.aiReplyCount || 0) + 1;
+                    ticketToUpdate.aiLastReplyAt = new Date().toISOString();
+                    try {
+                        await saveTicketData(channel.guild.id, channelId, ticketToUpdate);
+                    } catch (saveErr) {
+                        logger.warn('Ticket AI: failed to save reply count', { channelId, error: saveErr.message });
+                    }
+                }
+            }
+            return;
+        } else if (!isAiConfigured()) {
+            return;
+        }
+
+
         // Build richer system prompt with ticket metadata
         const ticketNumber = extractTicketNumber(channel.name) || freshTicket?.id?.slice(-4) || null;
         const ticketOwnerTag = freshTicket?.userId ? `User ID ${freshTicket.userId}` : null;
@@ -1144,7 +1156,10 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
             ticketPriority: freshTicket?.priority || ticketDataSnapshot?.priority || null,
             ticketNumber,
             ticketOwnerTag,
-            extraContext: guildConfig?.ticketPanelMessage ? `Server's ticket panel says: ${String(guildConfig.ticketPanelMessage).slice(0, 250)}` : null,
+            extraContext: [
+                guildConfig?.ticketPanelMessage ? `Server's ticket panel says: ${String(guildConfig.ticketPanelMessage).slice(0, 250)}` : null,
+                describeIntakeForPrompt(intake?.analysis || freshTicket?.aiIntake || ticketDataSnapshot?.aiIntake || null),
+            ].filter(Boolean).join('\n') || null,
         });
 
         const { messages, pendingCount, pendingMessages } = buildConversationMessages(systemPrompt, chronological, {
@@ -1165,6 +1180,13 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
         if (containsHumanRequest(pendingTextCombined)) {
             skipProvider = true;
             replyTextToUse = "Got it — you’d like to speak with a staff member. Please press the **🧑‍💼 Request Human** button and our team will be notified right away. If you have a quick question in the meantime, I can still try to help!";
+        }
+
+        const pauseRemaining = getProviderPauseRemainingMs();
+        if (!skipProvider && pauseRemaining > 0) {
+            logger.debug(`Ticket AI: provider paused for ${Math.ceil(pauseRemaining / 1000)}s`, { channelId });
+            await maybeNotifyOutage(channel, state);
+            return;
         }
 
         let text = null;

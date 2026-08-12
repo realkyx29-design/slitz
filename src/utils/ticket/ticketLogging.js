@@ -93,6 +93,11 @@ function getLogChannelForEventType(config, eventType) {
     case 'human_requested':
       return config.ticketLogsChannelId || null;
 
+    case 'ai_player_report':
+    case 'ai_player_report_update':
+    case 'ai_player_report_ready':
+      return config.ticketAiLogsChannelId || null;
+
     default:
       return null;
   }
@@ -108,6 +113,9 @@ const TICKET_EVENT_STYLES = {
   transcript: { color: 0x57F287, title: 'Transcript Generated' },
   feedback: { color: 0x57F287, title: 'Feedback Received' },
   human_requested: { color: 0x2ecc71, title: 'Human Support Requested' },
+  ai_player_report: { color: 0xE67E22, title: 'Player Report Detected' },
+  ai_player_report_update: { color: 0xF1C40F, title: 'Player Report Updated' },
+  ai_player_report_ready: { color: 0x57F287, title: 'Player Report Ready' },
 };
 
 async function createTicketLogEmbed(guild, event) {
@@ -172,6 +180,44 @@ async function createTicketLogEmbed(guild, event) {
         },
       ];
       break;
+
+    case 'ai_player_report':
+    case 'ai_player_report_update':
+    case 'ai_player_report_ready': {
+      const meta = event.metadata || {};
+      const username = meta.reportedUsername || 'Not provided yet';
+      const videoStatus = meta.hasVideo
+        ? `Provided${meta.videoUrls?.[0] ? `\n${String(meta.videoUrls[0]).slice(0, 200)}` : ''}`
+        : 'Missing — still needed';
+      const missing = Array.isArray(meta.missing) && meta.missing.length
+        ? meta.missing.map((item) => `\`${item}\``).join(', ')
+        : 'None';
+
+      author = await resolveUserAuthor(guild.client, event.userId);
+      inlineFields = [
+        { name: 'Ticket', value: ticketRef, inline: true },
+        { name: 'Reporter', value: userMention || 'Unknown', inline: true },
+      ];
+      if (channelMention) {
+        inlineFields.push({ name: 'Channel', value: channelMention, inline: true });
+      }
+      fields.push({ name: 'Reported player', value: String(username).slice(0, 1024), inline: true });
+      fields.push({ name: 'Video evidence', value: videoStatus.slice(0, 1024), inline: true });
+      fields.push({
+        name: 'Screenshots',
+        value: meta.hasImage ? 'Yes (video still preferred)' : 'None',
+        inline: true,
+      });
+      fields.push({ name: 'Still missing', value: missing, inline: false });
+      if (event.reason || meta.description) {
+        fields.push({
+          name: 'Details',
+          value: String(event.reason || meta.description).slice(0, 1024),
+          inline: false,
+        });
+      }
+      break;
+    }
 
     case 'human_requested':
       author = await resolveUserAuthor(guild.client, event.executorId);
@@ -274,9 +320,10 @@ async function createTicketLogEmbed(guild, event) {
 export async function getTicketLoggingConfig(client, guildId) {
   const config = await getGuildConfig(client, guildId);
   return {
-    enabled: !!(config.ticketLogsChannelId || config.ticketTranscriptChannelId),
+    enabled: !!(config.ticketLogsChannelId || config.ticketTranscriptChannelId || config.ticketAiLogsChannelId),
     lifecycleChannelId: config.ticketLogsChannelId || null,
     transcriptChannelId: config.ticketTranscriptChannelId || null,
+    aiLogsChannelId: config.ticketAiLogsChannelId || null,
   };
 }
 

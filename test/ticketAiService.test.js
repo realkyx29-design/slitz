@@ -72,12 +72,12 @@ test('AI is only configured when enabled and a key exists', () => {
     assert.equal(isAiConfigured({ AI_API_KEY: 'sk-test', AI_TICKETS_ENABLED: 'false' }), false);
 });
 
-test('isAiActiveForGuild respects the per-guild toggle', () => {
+test('isAiActiveForGuild is always on (no per-server enable command)', () => {
     const env = { AI_API_KEY: 'sk-test' };
     assert.equal(isAiActiveForGuild({}, env), true);
     assert.equal(isAiActiveForGuild({ ticketAiEnabled: true }, env), true);
-    assert.equal(isAiActiveForGuild({ ticketAiEnabled: false }, env), false);
-    assert.equal(isAiActiveForGuild({}, { AI_API_KEY: '' }), false);
+    assert.equal(isAiActiveForGuild({ ticketAiEnabled: false }, env), true);
+    assert.equal(isAiActiveForGuild({}, { AI_API_KEY: '' }), true);
 });
 
 test('resolveHumanNotifyUserId prefers the guild override, then env, then default', () => {
