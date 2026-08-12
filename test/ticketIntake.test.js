@@ -9,6 +9,7 @@ process.env.DATABASE_URL = 'postgres://test:test@127.0.0.1:5432/test';
 const {
     TICKET_KINDS,
     isPlayerReportText,
+    isHowToReportQuestion,
     detectTicketKind,
     extractReportedUsername,
     extractVideoLinks,
@@ -20,6 +21,9 @@ const {
     evidenceFingerprint,
     mergeIntakeState,
     describeIntakeForPrompt,
+    looksLikeSupportQuestion,
+    latestUserMessageText,
+    shouldSendIntakeFollowUp,
 } = await import('../src/services/ticketAI/ticketIntake.js');
 
 test('detects player reports from common phrasing', () => {
@@ -29,6 +33,68 @@ test('detects player reports from common phrasing', () => {
     assert.equal(isPlayerReportText('how do I join the discord?'), false);
     assert.equal(detectTicketKind({ reason: 'Player report: hacking' }), TICKET_KINDS.PLAYER_REPORT);
     assert.equal(detectTicketKind({ reason: 'Need help with roles' }), TICKET_KINDS.GENERAL);
+});
+
+test('how-to-report questions are not treated as a filed player report', () => {
+    assert.equal(isHowToReportQuestion('how do I report a player?'), true);
+    assert.equal(isHowToReportQuestion('what do I need to report someone'), true);
+    assert.equal(isHowToReportQuestion('I want to report a player named Joe'), false);
+    assert.equal(isPlayerReportText('how do I report a player?'), false);
+    assert.equal(isPlayerReportText('how can I report someone for cheating'), false);
+    assert.equal(detectTicketKind({ texts: ['how do I report a player?'] }), TICKET_KINDS.GENERAL);
+});
+
+test('looksLikeSupportQuestion detects real questions vs evidence dumps', () => {
+    assert.equal(looksLikeSupportQuestion('how do I get VIP?'), true);
+    assert.equal(looksLikeSupportQuestion('what are the server rules'), true);
+    assert.equal(looksLikeSupportQuestion('can you help me with roles'), true);
+    assert.equal(looksLikeSupportQuestion('username: ToxicKid'), false);
+    assert.equal(looksLikeSupportQuestion('https://medal.tv/games/123'), false);
+});
+
+test('shouldSendIntakeFollowUp never hijacks a question with the checklist', () => {
+    const incompleteReport = {
+        isPlayerReport: true,
+        complete: false,
+        reportedUsername: null,
+        hasVideo: false,
+        missing: ['username', 'video'],
+    };
+
+    assert.equal(shouldSendIntakeFollowUp({
+        previous: { kind: TICKET_KINDS.PLAYER_REPORT },
+        analysis: incompleteReport,
+        latestUserText: 'how do I appeal a ban?',
+    }), false);
+
+    assert.equal(shouldSendIntakeFollowUp({
+        previous: { kind: TICKET_KINDS.PLAYER_REPORT },
+        analysis: incompleteReport,
+        latestUserText: 'I still need help with roles',
+    }), false);
+
+    assert.equal(shouldSendIntakeFollowUp({
+        previous: { kind: TICKET_KINDS.PLAYER_REPORT, reportedUsername: null },
+        analysis: { ...incompleteReport, reportedUsername: 'ToxicKid', missing: ['video'] },
+        latestUserText: 'username: ToxicKid',
+    }), true);
+
+    assert.equal(shouldSendIntakeFollowUp({
+        previous: { kind: TICKET_KINDS.PLAYER_REPORT, reportedUsername: 'ToxicKid' },
+        analysis: {
+            isPlayerReport: true,
+            complete: true,
+            reportedUsername: 'ToxicKid',
+            hasVideo: true,
+            missing: [],
+        },
+        latestUserText: 'https://youtu.be/abcd1234',
+    }), true);
+
+    assert.equal(latestUserMessageText([
+        { author: { bot: true }, content: 'Hi I need a username' },
+        { author: { bot: false }, content: 'how do I get the member role?' },
+    ]), 'how do I get the member role?');
 });
 
 test('extracts a reported username from labels, mentions, and handles', () => {
@@ -147,6 +213,7 @@ test('describeIntakeForPrompt tells the model what is still missing', () => {
     });
     assert.match(missing, /missing: video/);
     assert.match(missing, /Joe/);
+    assert.match(missing, /answer that question first/i);
 
     const ready = describeIntakeForPrompt({ kind: TICKET_KINDS.PLAYER_REPORT, complete: true, reportedUsername: 'Joe', hasVideo: true });
     assert.match(ready, /complete/i);

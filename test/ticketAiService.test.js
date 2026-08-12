@@ -109,6 +109,8 @@ test('system prompt enforces answer-only behaviour', () => {
     assert.match(prompt, /create files/i);
     assert.match(prompt, /Request Human/);
     assert.match(prompt, /Never guess or invent answers/i);
+    assert.match(prompt, /answer what they actually asked/i);
+    assert.match(prompt, /never reply with only a demand/i);
     assert.ok(prompt.includes(ESCALATION_TOKEN));
     assert.ok(prompt.includes('Test Guild'));
 });

@@ -85,13 +85,69 @@ function normalizeText(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * "How do I report a player?" is a support question, not a filed report.
+ * Treating those as player reports made the bot nag for a username/video
+ * instead of answering.
+ */
+export function isHowToReportQuestion(text) {
+    const haystack = String(text || '').toLowerCase();
+    if (!haystack) return false;
+    const asksHow = /\b(how (do i|can i|to|does one|would i)|what (do i need|should i|is the)|where (do i|can i)|can you (help|tell|explain)|help me|i (need|want) (help|to know))\b/.test(haystack);
+    return asksHow && /\breport/.test(haystack);
+}
+
 export function isPlayerReportText(text) {
     const haystack = String(text || '').toLowerCase();
     if (!haystack) return false;
+    if (isHowToReportQuestion(haystack)) return false;
     if (/\breport(ing|ed)?\b/.test(haystack) && /\b(player|user|him|her|them|this guy|this person)\b/.test(haystack)) {
         return true;
     }
     return PLAYER_REPORT_PHRASES.some((phrase) => haystack.includes(phrase));
+}
+
+/** True when the user is asking something rather than just dumping report evidence. */
+export function looksLikeSupportQuestion(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return false;
+    if (/\?/.test(raw)) return true;
+    const t = raw.toLowerCase();
+    if (/^(how|what|why|when|where|who|which|can|could|would|do|does|did|is|are|am|will|should|may|help|please|yo|hey|hi|hello)\b/.test(t)) {
+        return true;
+    }
+    return /\b(how (do|can|to|does)|what (is|are|does|do)|can you|could you|please (help|tell|explain|answer)|i (need|want) (help|to know|to ask)|i have a question)\b/.test(t);
+}
+
+export function latestUserMessageText(messages = []) {
+    const list = Array.isArray(messages) ? messages : [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+        const message = list[i];
+        if (message?.author?.bot) continue;
+        const text = normalizeText(message?.content || '');
+        if (text) return text;
+    }
+    return '';
+}
+
+/**
+ * Only send the canned username/video checklist when the user actually
+ * supplied new report evidence. Questions always go to the chat model.
+ */
+export function shouldSendIntakeFollowUp({ previous = null, analysis = null, latestUserText = '' } = {}) {
+    if (!analysis?.isPlayerReport) return false;
+
+    const askedQuestion = looksLikeSupportQuestion(latestUserText);
+    const justCompleted = Boolean(analysis.complete && !previous?.complete);
+    const hadUsername = Boolean(previous?.reportedUsername);
+    const hadVideo = Boolean(previous?.hasVideo || (previous?.videoUrls || []).length);
+    const newUsername = Boolean(analysis.reportedUsername && !hadUsername);
+    const newVideo = Boolean(analysis.hasVideo && !hadVideo);
+
+    if (askedQuestion) return false;
+    if (justCompleted) return true;
+    if (newUsername || newVideo) return true;
+    return false;
 }
 
 export function detectTicketKind({ reason = '', texts = [] } = {}) {
@@ -543,13 +599,17 @@ export async function syncTicketIntake({
 
     await persistIntakeState(channel.guild.id, channel.id, ticketData, state);
 
-    const shouldUseTemplate = analysis.isPlayerReport && !analysis.complete;
+    const latestUserText = latestUserMessageText(messages);
+    const shouldUseTemplate = shouldSendIntakeFollowUp({
+        previous,
+        analysis,
+        latestUserText,
+    });
     return {
         analysis,
-        followUp: shouldUseTemplate || (analysis.isPlayerReport && analysis.complete && !previous?.complete)
-            ? buildIntakeFollowUp(analysis)
-            : null,
+        followUp: shouldUseTemplate ? buildIntakeFollowUp(analysis) : null,
         shouldUseTemplate,
+        latestUserText,
     };
 }
 
@@ -563,8 +623,8 @@ export function describeIntakeForPrompt(analysis) {
             analysis.hasVideo ? null : 'video',
         ].filter(Boolean);
     const status = analysis.complete
-        ? 'The player report is complete (username + video collected). You may answer follow-up questions only.'
-        : `This is a player report still missing: ${missing.join(', ') || 'nothing'}. Ask only for the missing items. Do not claim staff already handled it.`;
+        ? 'The player report is complete (username + video collected). Answer the user\'s latest message normally.'
+        : `This is a player report still missing: ${missing.join(', ') || 'nothing'}. If the user asked a question, answer that question first. Only then you may briefly mention any missing username or video. Never ignore their message to demand those items.`;
     const known = [
         analysis.reportedUsername ? `Reported username: ${analysis.reportedUsername}` : 'Reported username: not provided yet',
         analysis.hasVideo ? 'Video evidence: provided' : 'Video evidence: missing',
