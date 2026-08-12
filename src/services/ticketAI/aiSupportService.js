@@ -27,6 +27,7 @@ import {
     CLOSE_TICKET_TOKEN,
     WARN_USER_TOKEN,
     applyAiTicketActions,
+    detectClearTrolling,
     parseAiActions,
     stripActionTokens,
 } from './ticketAiActions.js';
@@ -1279,13 +1280,48 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
         }
         const chronological = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
+        const ticketRecord = freshTicket || ticketDataSnapshot;
+        const aiConfigured = Boolean(aiConfig?.enabled && aiConfig?.apiKey);
+        const behaviorSignal = detectClearTrolling({
+            messages: chronological,
+            ownerId: ticketRecord?.userId || null,
+        });
+
         const intake = await syncTicketIntake({
             channel,
-            ticketData: freshTicket || ticketDataSnapshot,
+            ticketData: ticketRecord,
             guildConfig,
             client,
             messages: chronological,
         });
+
+        // If the provider is unavailable, we can still handle an unambiguous
+        // deliberate spam/trolling signal locally. This uses the same guarded
+        // warning action and the same AI embed as provider-generated warnings;
+        // it does not change the assistant's layout or environment variables.
+        if (aiConfig?.enabled && !aiConfig?.apiKey && behaviorSignal.warn && ticketRecord) {
+            const localOutcome = await applyAiTicketActions({
+                channel,
+                client,
+                ticketData: ticketRecord,
+                guildConfig,
+                actions: { warn: true, warnReason: behaviorSignal.reason },
+                lastAuthorId: state.lastTriggerAuthorId || null,
+                warningLimit: AI_WARNING_LIMIT,
+                sendNotice: (notice) => sendAiEmbed(channel, notice),
+            });
+            if (localOutcome.warned || localOutcome.kicked) {
+                try {
+                    await saveTicketData(channel.guild.id, channelId, ticketRecord);
+                } catch (saveErr) {
+                    logger.warn('Ticket AI: failed to save local moderation state', { channelId, error: saveErr.message });
+                }
+            }
+            if (localOutcome.kicked) {
+                clearTicketAiState(channelId);
+            }
+            return;
+        }
 
         // Only skip the model for evidence-only report updates (new username/video).
         // Questions always fall through so the model can actually answer them.
@@ -1308,7 +1344,7 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
             return;
         }
 
-        if (!isAiConfigured()) {
+        if (!aiConfigured) {
             return;
         }
 
@@ -1391,6 +1427,15 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
         const requestedActions = (!skipProvider && !escalation)
             ? parseAiActions(text)
             : { close: false, closeReason: null, warn: false, warnReason: null, text };
+
+        // Some otherwise good models answer the user but omit the moderation
+        // sentinel. Add only the conservative local signal above; ordinary
+        // frustration and one-off rudeness remain untouched.
+        if (!skipProvider && behaviorSignal.warn && !requestedActions.warn) {
+            requestedActions.warn = true;
+            requestedActions.warnReason = behaviorSignal.reason;
+        }
+
         const sanitized = sanitizeAiReply(text);
         // Use the fallback when the model produced nothing useful, or when it
         // signalled escalation but left only a fragment of a sentence behind.
@@ -1398,7 +1443,6 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
             ? AI_FALLBACK_MESSAGE
             : sanitized;
 
-        const ticketRecord = freshTicket || ticketDataSnapshot;
         const hasActions = Boolean(requestedActions.close || requestedActions.warn);
 
         // Runs after the reply is posted so the user reads the explanation first.

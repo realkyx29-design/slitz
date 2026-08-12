@@ -129,6 +129,42 @@ export function buildTicketControlRows({
 }
 
 /**
+ * Normalize the result returned by discord.js for pinned messages.
+ *
+ * discord.js 14.26 changed `MessageManager#fetchPins()` from returning a
+ * Collection to returning `{ items, hasMore }`, where each item contains the
+ * actual message under `item.message`. Treating that response like a
+ * Collection throws while closing/claiming/reopening a ticket, which is why
+ * users were seeing the generic "An error occurred while closing the ticket"
+ * message. Keep this adapter tolerant of both shapes so tickets created with
+ * either discord.js response format continue to work.
+ *
+ * @param {unknown} result
+ * @returns {import('discord.js').Message[]}
+ */
+export function extractPinnedTicketMessages(result) {
+  if (!result) return [];
+
+  if (Array.isArray(result.items)) {
+    return result.items
+      .map((item) => item?.message || item)
+      .filter((message) => message && message.id);
+  }
+
+  if (typeof result.values === 'function') {
+    return [...result.values()]
+      .map((item) => item?.message || item)
+      .filter((message) => message && message.id);
+  }
+
+  if (Array.isArray(result)) {
+    return result.filter((message) => message && message.id);
+  }
+
+  return [];
+}
+
+/**
  * Collect the messages the ticket helpers need to reconcile (control panel,
  * claim banner, close banner).
  *
@@ -144,16 +180,29 @@ async function fetchTicketPanelMessages(channel) {
   const byId = new Map();
 
   const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
-  if (recent) {
-    for (const message of recent.values()) byId.set(message.id, message);
+  if (recent && typeof recent.values === 'function') {
+    for (const message of recent.values()) {
+      if (message?.id) byId.set(message.id, message);
+    }
   }
 
-  const pinned = await channel.messages.fetchPins().catch(() => null);
-  if (pinned) {
-    for (const message of pinned.values()) byId.set(message.id, message);
+  let pinned = null;
+  try {
+    if (typeof channel.messages.fetchPins === 'function') {
+      pinned = await channel.messages.fetchPins();
+    } else if (typeof channel.messages.fetchPinned === 'function') {
+      // Compatibility with older discord.js releases.
+      pinned = await channel.messages.fetchPinned();
+    }
+  } catch {
+    pinned = null;
   }
 
-  return [...byId.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+  for (const message of extractPinnedTicketMessages(pinned)) {
+    byId.set(message.id, message);
+  }
+
+  return [...byId.values()].sort((a, b) => (b.createdTimestamp || 0) - (a.createdTimestamp || 0));
 }
 
 export const getUserTicketCount = wrapServiceBoundary(async function getUserTicketCount(guildId, userId) {
@@ -344,6 +393,24 @@ export async function closeTicket(channel, closer, reason = 'No reason provided'
   try {
     const ticketData = requireTicket(await getTicketData(channel.guild.id, channel.id), channel);
     
+    // A double-click or two staff members closing at the same time should be
+    // harmless. The first close persists the state before touching optional
+    // Discord resources; later calls can acknowledge the already-closed ticket
+    // instead of sending duplicate DMs/banners or failing halfway through.
+    if (ticketData.status === 'closed') {
+      clearTicketAiState(channel.id);
+      return ticketData;
+    }
+
+    if (ticketData.status === 'deleting') {
+      ticketUserError(
+        'Ticket is being deleted',
+        'This ticket is already being deleted.',
+        ErrorTypes.VALIDATION,
+        { channelId: channel.id, operation: 'closeTicket' }
+      );
+    }
+
     const config = await getGuildConfig(channel.client, channel.guild.id);
     const dmOnClose = config.dmOnClose !== false;
     const closedCategoryId = config.ticketClosedCategoryId || null;
@@ -452,32 +519,39 @@ export async function closeTicket(channel, closer, reason = 'No reason provided'
         logger.warn(`Could not update user permissions for closed ticket: ${permError.message}`);
     }
     
-    const messages = await fetchTicketPanelMessages(channel);
-    const ticketMessage = messages.find(m => 
-      m.embeds.length > 0 && 
-      m.embeds[0].title?.startsWith('Ticket #')
-    );
-    
-    if (ticketMessage) {
-      const embed = ticketMessage.embeds[0];
-      const statusField = embed.fields?.find(f => f.name === 'Status');
-      
-      if (statusField) {
-        statusField.value = '🔴 Closed';
+    // Updating the panel is cosmetic: the persisted status above is the source
+    // of truth. A missing Manage Messages permission or a deleted panel must not
+    // turn a successful close into the generic close error.
+    try {
+      const messages = await fetchTicketPanelMessages(channel);
+      const ticketMessage = messages.find(m =>
+        m.embeds?.length > 0 &&
+        m.embeds[0].title?.startsWith('Ticket #')
+      );
+
+      if (ticketMessage) {
+        const embed = ticketMessage.embeds[0];
+        const statusField = embed.fields?.find(f => f.name === 'Status');
+
+        if (statusField) {
+          statusField.value = '🔴 Closed';
+        }
+
+        const updatedEmbed = createEmbed({
+          title: embed.title || 'Ticket',
+          description: embed.description || 'Ticket discussion',
+          color: '#e74c3c',
+          fields: embed.fields || [],
+          footer: embed.footer
+        });
+
+        await ticketMessage.edit({
+          embeds: [updatedEmbed],
+          components: []
+        });
       }
-      
-      const updatedEmbed = createEmbed({
-        title: embed.title || 'Ticket',
-        description: embed.description || 'Ticket discussion',
-        color: '#e74c3c',
-        fields: embed.fields || [],
-        footer: embed.footer
-      });
-      
-      await ticketMessage.edit({ 
-        embeds: [updatedEmbed],
-components: []
-      });
+    } catch (panelError) {
+      logger.warn(`Could not update the closed ticket panel ${channel.id}: ${panelError.message}`);
     }
     
     const closeEmbed = createEmbed({
@@ -500,7 +574,11 @@ components: []
         .setEmoji('🗑️')
     );
     
-    await channel.send({ embeds: [closeEmbed], components: [controlRow] });
+    try {
+      await channel.send({ embeds: [closeEmbed], components: [controlRow] });
+    } catch (closeBannerError) {
+      logger.warn(`Could not post the closed-ticket controls in ${channel.id}: ${closeBannerError.message}`);
+    }
     
     await logTicketEvent({
       client: channel.client,

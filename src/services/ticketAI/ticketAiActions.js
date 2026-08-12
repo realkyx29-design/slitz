@@ -72,7 +72,85 @@ export function countAiWarningsForUser(ticketData, userId) {
     if (!userId) {
         return 0;
     }
-    return getAiWarnings(ticketData).filter((entry) => entry.userId === userId).length;
+    return getAiWarnings(ticketData).filter((entry) => String(entry.userId) === String(userId)).length;
+}
+
+function normalizeBehaviorText(value) {
+    return String(value ?? '')
+        .toLowerCase()
+        .replace(/<@!?\d{17,20}>/g, ' user ')
+        .replace(/https?:\/\/\S+/g, ' link ')
+        .replace(/[^a-z0-9\s!?']/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+const CLEAR_TROLLING_PATTERNS = [
+    /\b(?:i['’]?m|i am|we['’]?re|we are)\s+(?:just\s+)?(?:troll(?:ing)?|spam(?:ming)?|wast(?:ing|e)\s+(?:your|staff(?:'s)?|everyone['’]?s)?\s*time)\b/i,
+    /\b(?:just|only)\s+(?:here\s+to\s+)?(?:troll(?:ing)?|spam(?:ming)?|wast(?:ing|e)\s+(?:your|staff(?:'s)?|everyone['’]?s)?\s*time)\b/i,
+    /\b(?:this|the)\s+(?:ticket|support)\s+is\s+for\s+(?:trolling|spamming|wasting)\b/i,
+];
+const REPEATED_ABUSE_PATTERN = /\b(?:fuck|f+u+c+k+|shit|bitch|idiot|moron|stfu|shut\s+up)\b/i;
+
+/**
+ * Find behavior that is unambiguously deliberate ticket abuse without
+ * penalising a single frustrated, confused, or rude message. The provider can
+ * still request a warning for other cases with [[WARN_USER]], but this local
+ * fallback keeps the warning system useful when a provider refuses to emit the
+ * sentinel or no API key is configured.
+ *
+ * @param {{messages?: Array, ownerId?: string|null}} options
+ * @returns {{warn: boolean, reason: string|null}}
+ */
+export function detectClearTrolling({ messages = [], ownerId = null } = {}) {
+    // Never infer a moderation target when the ticket owner is unknown.
+    if (!ownerId) {
+        return { warn: false, reason: null };
+    }
+
+    const entries = (Array.isArray(messages) ? messages : [])
+        .filter((message) => {
+            if (!message || message.author?.bot) return false;
+            return !ownerId || String(message.author?.id) === String(ownerId);
+        })
+        .map((message) => ({
+            text: String(message.content || '').trim(),
+            normalized: normalizeBehaviorText(message.content),
+        }))
+        .filter((message) => message.normalized);
+
+    const latest = entries.at(-1);
+    if (latest && CLEAR_TROLLING_PATTERNS.some((pattern) => pattern.test(latest.text))) {
+        return { warn: true, reason: 'deliberate trolling or wasting support time' };
+    }
+
+    // Repeating the same non-question message three times in a short ticket is
+    // a much safer signal than trying to classify ordinary insults. Only inspect
+    // the ending of the conversation so one old burst cannot issue a new warning
+    // on every later, unrelated message. Do not count one-word greetings or
+    // questions as spam.
+    const recent = entries.slice(-3);
+    if (recent.length === 3) {
+        const [first, second, third] = recent;
+        if (
+            first.normalized.length >= 4
+            && first.normalized.length <= 240
+            && first.normalized === second.normalized
+            && second.normalized === third.normalized
+            && !/[?]/.test(first.text)
+        ) {
+            return { warn: true, reason: 'repeated spam messages' };
+        }
+
+        if (
+            recent.every((entry) => REPEATED_ABUSE_PATTERN.test(entry.text))
+            && recent.every((entry) => !/[?]/.test(entry.text))
+        ) {
+            return { warn: true, reason: 'repeated abusive messages' };
+        }
+    }
+
+    return { warn: false, reason: null };
 }
 
 /**
@@ -183,7 +261,7 @@ export function resolveModerationTargetId(ticketData, { lastAuthorId = null } = 
 
 async function recordWarning({ client, guildId, userId, reason }) {
     try {
-        const { default: WarningService } = await import('../moderation/warningService.js');
+        const { WarningService } = await import('../moderation/warningService.js');
         await WarningService.addWarning({
             guildId,
             userId,
