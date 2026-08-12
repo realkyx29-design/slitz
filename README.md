@@ -150,28 +150,39 @@ Add an OpenAI-compatible API key to your environment and restart the bot:
 ```env
 AI_TICKETS_ENABLED=true
 AI_API_KEY=your_api_key_here
-AI_API_BASE_URL=https://api.openai.com/v1    # any OpenAI-compatible endpoint (OpenRouter, Groq, ...)
-AI_TICKET_MODEL=gpt-4o-mini
+# Leave the next two blank to auto-detect from the key prefix
+# (gsk_ → Groq, sk-or- → OpenRouter, sk- → OpenAI).
+# AI_API_BASE_URL=
+# AI_TICKET_MODEL=
 TICKET_HUMAN_NOTIFY_USER_ID=1377402826514235442   # user pinged on "Request Human"
 ```
 
-`AI_API_KEY` is the documented variable, but a provider-specific key already in your
-environment is picked up automatically (with a matching default endpoint and model):
+`AI_API_KEY` is the documented variable. The key prefix is detected automatically,
+so a Groq key (`gsk_...`) pasted there is routed to Groq — it is **not** sent to
+OpenAI. A provider-specific key already in your environment is also picked up
+(with a matching default endpoint and model):
 
 | Variable | Default endpoint | Default model |
 | --- | --- | --- |
-| `AI_API_KEY` | `AI_API_BASE_URL` (or OpenAI) | `gpt-4o-mini` |
+| `AI_API_KEY` (`gsk_...`) | `https://api.groq.com/openai/v1` | `openai/gpt-oss-20b` |
+| `AI_API_KEY` (`sk-...`) | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | `openai/gpt-4o-mini` |
-| `GROQ_API_KEY` | `https://api.groq.com/openai/v1` | `llama-3.1-8b-instant` |
+| `GROQ_API_KEY` | `https://api.groq.com/openai/v1` | `openai/gpt-oss-20b` |
 | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | `Llama-3.1-8B-Instruct-Turbo` |
 | `XAI_API_KEY` | `https://api.x.ai/v1` | `grok-2-latest` |
 | `MISTRAL_API_KEY` | `https://api.mistral.ai/v1` | `mistral-small-latest` |
 
-Setting `AI_API_BASE_URL` / `AI_TICKET_MODEL` always overrides the defaults above.
-Keys are read tolerantly — surrounding quotes, trailing newlines and stray whitespace
-(the usual result of pasting into a hosting panel) are stripped automatically.
+A *custom* `AI_API_BASE_URL` / `AI_TICKET_MODEL` still overrides the defaults.
+The stock `.env.example` OpenAI values (`https://api.openai.com/v1`, `gpt-4o-mini`)
+are ignored when the key is clearly from another provider, so copying the example
+file next to a Groq key no longer 401s. Keys are read tolerantly — surrounding
+quotes, trailing newlines and stray whitespace (the usual result of pasting into
+a hosting panel) are stripped automatically.
+
+> Groq's old default `llama-3.1-8b-instant` is shut down for free/developer
+> tiers on 2026-08-16. TitanBot now uses `openai/gpt-oss-20b`.
 
 Without a key the assistant stays off and the ticket system behaves exactly as before.
 

@@ -36,6 +36,14 @@ const {
     describeProviderError,
     testAiConnection,
     resetProviderState,
+    detectProviderFromKey,
+    extractCompletionText,
+    buildCompletionPayload,
+    stripCompatibilityParams,
+    isReasoningModel,
+    isStockExampleBaseUrl,
+    GROQ_DEFAULT_MODEL,
+    GROQ_DEFAULT_BASE_URL,
 } = await import('../src/services/ticketAI/aiSupportService.js');
 
 // ---------------------------------------------------------------------------
@@ -361,7 +369,8 @@ test('provider-specific keys are accepted with matching defaults', () => {
 
     const groq = normalizeAiConfig({ GROQ_API_KEY: 'gsk-test' });
     assert.equal(groq.apiKeySource, 'GROQ_API_KEY');
-    assert.equal(groq.baseUrl, 'https://api.groq.com/openai/v1');
+    assert.equal(groq.baseUrl, GROQ_DEFAULT_BASE_URL);
+    assert.equal(groq.model, GROQ_DEFAULT_MODEL);
 
     const router = normalizeAiConfig({ OPENROUTER_API_KEY: 'or-test' });
     assert.equal(router.baseUrl, 'https://openrouter.ai/api/v1');
@@ -487,6 +496,93 @@ test('testAiConnection surfaces a rejected key with an actionable hint', async (
     const result = await testAiConnection({ env: { AI_API_KEY: 'sk-bad' }, transport });
     assert.equal(result.ok, false);
     assert.equal(result.httpStatus, 401);
-    assert.match(result.detail, /AI_API_KEY|rejected/i);
+    assert.match(result.detail, /rejected|gsk_/i);
     resetProviderState();
+});
+
+// ---------------------------------------------------------------------------
+// Groq key auto-detection (regression: gsk_ keys were sent to OpenAI)
+// ---------------------------------------------------------------------------
+
+test('detectProviderFromKey recognises Groq, OpenRouter and OpenAI prefixes', () => {
+    assert.equal(detectProviderFromKey('gsk_live_abc'), 'groq');
+    assert.equal(detectProviderFromKey('gsk-test'), 'groq');
+    assert.equal(detectProviderFromKey('sk-or-v1-abc'), 'openrouter');
+    assert.equal(detectProviderFromKey('sk-proj-abc'), 'openai');
+    assert.equal(detectProviderFromKey('not-a-key'), null);
+    assert.equal(detectProviderFromKey(''), null);
+});
+
+test('a Groq key in AI_API_KEY is routed to Groq, not OpenAI', () => {
+    const config = normalizeAiConfig({ AI_API_KEY: 'gsk_examplekey0001' });
+    assert.equal(config.apiKeySource, 'AI_API_KEY');
+    assert.equal(config.apiKeyProvider, 'groq');
+    assert.equal(config.baseUrl, GROQ_DEFAULT_BASE_URL);
+    assert.equal(config.model, GROQ_DEFAULT_MODEL);
+});
+
+test('stock .env.example OpenAI URL/model do not override a Groq key', () => {
+    const config = normalizeAiConfig({
+        AI_API_KEY: 'gsk_examplekey0001',
+        AI_API_BASE_URL: 'https://api.openai.com/v1',
+        AI_TICKET_MODEL: 'gpt-4o-mini',
+    });
+    assert.equal(config.baseUrl, GROQ_DEFAULT_BASE_URL);
+    assert.equal(config.model, GROQ_DEFAULT_MODEL);
+    assert.equal(isStockExampleBaseUrl('https://api.openai.com/v1/'), true);
+});
+
+test('a custom base URL still wins even for a Groq key', () => {
+    const config = normalizeAiConfig({
+        AI_API_KEY: 'gsk_examplekey0001',
+        AI_API_BASE_URL: 'https://custom.example/v1/',
+        AI_TICKET_MODEL: 'my-model',
+    });
+    assert.equal(config.baseUrl, 'https://custom.example/v1');
+    assert.equal(config.model, 'my-model');
+});
+
+test('extractCompletionText handles string, parts, and empty shapes', () => {
+    assert.equal(extractCompletionText({ choices: [{ message: { content: 'hello' } }] }), 'hello');
+    assert.equal(extractCompletionText({
+        choices: [{ message: { content: [{ type: 'text', text: 'part ' }, { type: 'text', text: 'two' }] } }],
+    }), 'part two');
+    assert.equal(extractCompletionText({ choices: [{ text: 'legacy' }] }), 'legacy');
+    assert.equal(extractCompletionText({ choices: [{ message: { content: '   ' } }] }).trim(), '');
+    assert.equal(extractCompletionText({}), '');
+});
+
+test('buildCompletionPayload skips penalties on reasoning models', () => {
+    assert.equal(isReasoningModel('openai/gpt-oss-20b'), true);
+    assert.equal(isReasoningModel('gpt-4o-mini'), false);
+
+    const groq = buildCompletionPayload({ model: GROQ_DEFAULT_MODEL }, []);
+    assert.equal(groq.reasoning_effort, 'low');
+    assert.ok(!('frequency_penalty' in groq));
+
+    const openai = buildCompletionPayload({ model: 'gpt-4o-mini' }, []);
+    assert.equal(openai.frequency_penalty, 0.4);
+    assert.ok(!('reasoning_effort' in openai));
+});
+
+test('requestAiCompletion retries once after an unsupported-parameter 400', async () => {
+    const calls = [];
+    const transport = async (_url, payload) => {
+        calls.push(payload);
+        if ('frequency_penalty' in payload || 'presence_penalty' in payload) {
+            const err = new Error('unsupported parameter: frequency_penalty');
+            err.response = { status: 400, data: { error: { message: 'Unsupported parameter: frequency_penalty' } } };
+            throw err;
+        }
+        return { choices: [{ message: { content: 'ok after strip' } }] };
+    };
+
+    const config = normalizeAiConfig({ AI_API_KEY: 'sk-test' });
+    const { text, error } = await requestAiCompletion({ messages: [], config, transport });
+
+    assert.equal(error, null);
+    assert.equal(text, 'ok after strip');
+    assert.equal(calls.length, 2);
+    assert.ok(!('frequency_penalty' in calls[1]));
+    assert.ok('max_completion_tokens' in stripCompatibilityParams(calls[0]));
 });

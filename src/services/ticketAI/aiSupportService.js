@@ -120,16 +120,67 @@ export function isPlaceholderKey(key) {
  * one, but plenty of hosts/users already have a provider-specific key set — there
  * is no reason to claim "no API key" when a perfectly usable one is right there.
  */
+export const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+export const OPENAI_DEFAULT_MODEL = 'gpt-4o-mini';
+export const GROQ_DEFAULT_BASE_URL = 'https://api.groq.com/openai/v1';
+// llama-3.1-8b-instant is shut down for free/dev Groq tiers on 2026-08-16.
+export const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-20b';
+
+export const PROVIDER_PRESETS = {
+    openai: { baseUrl: OPENAI_DEFAULT_BASE_URL, model: OPENAI_DEFAULT_MODEL },
+    groq: { baseUrl: GROQ_DEFAULT_BASE_URL, model: GROQ_DEFAULT_MODEL },
+    openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
+    deepseek: { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+    together: { baseUrl: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.1-8B-Instruct-Turbo' },
+    xai: { baseUrl: 'https://api.x.ai/v1', model: 'grok-2-latest' },
+    mistral: { baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+};
+
 export const AI_KEY_ENV_VARS = [
     { name: 'AI_API_KEY', baseUrl: null, model: null },
-    { name: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-    { name: 'OPENROUTER_API_KEY', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
-    { name: 'GROQ_API_KEY', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant' },
-    { name: 'DEEPSEEK_API_KEY', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-    { name: 'TOGETHER_API_KEY', baseUrl: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.1-8B-Instruct-Turbo' },
-    { name: 'XAI_API_KEY', baseUrl: 'https://api.x.ai/v1', model: 'grok-2-latest' },
-    { name: 'MISTRAL_API_KEY', baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+    { name: 'OPENAI_API_KEY', ...PROVIDER_PRESETS.openai },
+    { name: 'OPENROUTER_API_KEY', ...PROVIDER_PRESETS.openrouter },
+    { name: 'GROQ_API_KEY', ...PROVIDER_PRESETS.groq },
+    { name: 'DEEPSEEK_API_KEY', ...PROVIDER_PRESETS.deepseek },
+    { name: 'TOGETHER_API_KEY', ...PROVIDER_PRESETS.together },
+    { name: 'XAI_API_KEY', ...PROVIDER_PRESETS.xai },
+    { name: 'MISTRAL_API_KEY', ...PROVIDER_PRESETS.mistral },
 ];
+
+/** Values people copy out of .env.example — present, but not a real choice. */
+const STOCK_EXAMPLE_BASE_URLS = new Set([
+    OPENAI_DEFAULT_BASE_URL,
+    `${OPENAI_DEFAULT_BASE_URL}/`,
+]);
+const STOCK_EXAMPLE_MODELS = new Set([OPENAI_DEFAULT_MODEL]);
+
+export function normalizeBaseUrl(url) {
+    return cleanSecret(url).replace(/\/+$/, '');
+}
+
+export function isStockExampleBaseUrl(url) {
+    const normalized = normalizeBaseUrl(url).toLowerCase();
+    return STOCK_EXAMPLE_BASE_URLS.has(normalized) || STOCK_EXAMPLE_BASE_URLS.has(`${normalized}/`);
+}
+
+export function isStockExampleModel(model) {
+    return STOCK_EXAMPLE_MODELS.has(cleanSecret(model));
+}
+
+/**
+ * Infer the provider from the key itself. Pasting a Groq `gsk_...` key into
+ * `AI_API_KEY` (the documented variable) used to send it to api.openai.com
+ * with `gpt-4o-mini`, which Groq keys cannot use — every request 401'd.
+ */
+export function detectProviderFromKey(key) {
+    const value = cleanSecret(key).toLowerCase();
+    if (!value) return null;
+    if (value.startsWith('gsk_') || value.startsWith('gsk-')) return 'groq';
+    if (value.startsWith('sk-or-')) return 'openrouter';
+    if (value.startsWith('sk-ant-')) return 'anthropic';
+    if (value.startsWith('sk-')) return 'openai';
+    return null;
+}
 
 /** Find the first usable key, ignoring blanks and .env.example placeholders. */
 export function resolveApiKeySource(env = process.env) {
@@ -151,19 +202,39 @@ export function resolveApiKeySource(env = process.env) {
 
 export function normalizeAiConfig(env = process.env) {
     const { key, source, defaults, placeholderVar } = resolveApiKeySource(env);
+    const detectedProvider = detectProviderFromKey(key);
+    const inferred = (detectedProvider && PROVIDER_PRESETS[detectedProvider])
+        || (defaults?.baseUrl ? defaults : null)
+        || PROVIDER_PRESETS.openai;
 
-    // An explicit AI_API_BASE_URL / AI_TICKET_MODEL always wins; otherwise fall
-    // back to sane defaults for whichever provider key was actually found.
-    const explicitBaseUrl = cleanSecret(env.AI_API_BASE_URL);
+    // A *custom* AI_API_BASE_URL / AI_TICKET_MODEL always wins. The stock
+    // .env.example OpenAI values do not — otherwise a Groq key pasted into
+    // AI_API_KEY (or GROQ_API_KEY next to the example URL) is sent to OpenAI.
+    const explicitBaseUrl = normalizeBaseUrl(env.AI_API_BASE_URL);
     const explicitModel = cleanSecret(env.AI_TICKET_MODEL);
+    const ignoreStockUrl = Boolean(
+        detectedProvider
+        && detectedProvider !== 'openai'
+        && isStockExampleBaseUrl(explicitBaseUrl),
+    );
+    const ignoreStockModel = Boolean(
+        detectedProvider
+        && detectedProvider !== 'openai'
+        && isStockExampleModel(explicitModel),
+    );
 
-    const baseUrl = (explicitBaseUrl || defaults?.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
-    const model = explicitModel || defaults?.model || 'gpt-4o-mini';
+    const baseUrl = (ignoreStockUrl ? '' : explicitBaseUrl)
+        || inferred.baseUrl
+        || OPENAI_DEFAULT_BASE_URL;
+    const model = (ignoreStockModel ? '' : explicitModel)
+        || inferred.model
+        || OPENAI_DEFAULT_MODEL;
 
     return {
         enabled: parseBooleanFlag(env.AI_TICKETS_ENABLED, true),
         apiKey: key,
         apiKeySource: source,
+        apiKeyProvider: detectedProvider || (source === 'GROQ_API_KEY' ? 'groq' : null),
         placeholderKeyVar: placeholderVar,
         baseUrl,
         model,
@@ -353,10 +424,28 @@ const providerState = {
     lastError: null,
 };
 
+export function isUnsupportedParameterError(error) {
+    const status = error?.response?.status;
+    if (status !== 400) return false;
+    const message = String(
+        error?.response?.data?.error?.message
+        || error?.response?.data?.message
+        || error?.message
+        || '',
+    ).toLowerCase();
+    return /unsupported|unrecognized|unknown parameter|invalid parameter|extra inputs|not supported|unexpected keyword/.test(message);
+}
+
 function classifyProviderError(error) {
     const status = error?.response?.status;
     if (status === 401 || status === 403) {
         return { retryable: false, pauseMs: 60 * 60 * 1000 }; // bad credentials
+    }
+    if (status === 400 && isUnsupportedParameterError(error)) {
+        return { retryable: true, pauseMs: 0, compatibility: true };
+    }
+    if (status === 400 || status === 404) {
+        return { retryable: false, pauseMs: 15 * 60 * 1000 };
     }
     if (status === 429) {
         return { retryable: true, pauseMs: 5 * 60 * 1000 };
@@ -374,7 +463,7 @@ export function describeProviderError(error) {
     const providerMessage = error?.response?.data?.error?.message || error?.response?.data?.message;
 
     if (status === 401) {
-        return 'The API key was rejected by the provider (401 Unauthorized). Check that AI_API_KEY is correct, active, and belongs to the provider set in AI_API_BASE_URL.';
+        return 'The API key was rejected by the provider (401 Unauthorized). A Groq key (starts with gsk_) must go to api.groq.com — not OpenAI. Check that the key is active and matches AI_API_BASE_URL.';
     }
     if (status === 403) {
         return 'The provider refused the request (403 Forbidden) — the key may lack access to this model, or billing/region is blocked.';
@@ -454,20 +543,69 @@ export function getProviderPauseRemainingMs(now = Date.now()) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export function isReasoningModel(model) {
+    const name = String(model || '').toLowerCase();
+    return /gpt-oss|o1|o3|o4-mini|reasoning/.test(name);
+}
+
+/** Pull the user-visible reply out of OpenAI-compatible and Groq response shapes. */
+export function extractCompletionText(data) {
+    const choice = data?.choices?.[0];
+    const message = choice?.message;
+    const raw = message?.content ?? choice?.text;
+
+    if (typeof raw === 'string') {
+        return raw;
+    }
+    if (Array.isArray(raw)) {
+        return raw.map((part) => {
+            if (typeof part === 'string') return part;
+            if (part?.type === 'text' || part?.type === 'output_text') return part.text || '';
+            return part?.text || '';
+        }).join('');
+    }
+    return '';
+}
+
+export function buildCompletionPayload(config, messages) {
+    const payload = {
+        model: config.model,
+        messages,
+        temperature: 0.3,
+        max_tokens: 450,
+    };
+
+    if (isReasoningModel(config.model)) {
+        // gpt-oss and similar reject frequency/presence penalties and spend
+        // tokens on hidden reasoning unless we keep effort low.
+        payload.reasoning_effort = 'low';
+    } else {
+        payload.frequency_penalty = 0.4;
+        payload.presence_penalty = 0.1;
+    }
+
+    return payload;
+}
+
+export function stripCompatibilityParams(payload) {
+    const next = { ...payload };
+    delete next.frequency_penalty;
+    delete next.presence_penalty;
+    delete next.reasoning_effort;
+    if (Object.prototype.hasOwnProperty.call(next, 'max_tokens')) {
+        next.max_completion_tokens = next.max_tokens;
+        delete next.max_tokens;
+    }
+    return next;
+}
+
 /**
  * Call the chat-completions endpoint. `transport` is injectable for tests;
  * it must be an async fn (url, payload, headers) -> response data.
  */
 export async function requestAiCompletion({ messages, config, transport = null }) {
     const url = `${config.baseUrl}/chat/completions`;
-    const payload = {
-        model: config.model,
-        messages,
-        temperature: 0.3,
-        max_tokens: 450,
-        frequency_penalty: 0.4,
-        presence_penalty: 0.1,
-    };
+    let payload = buildCompletionPayload(config, messages);
     const headers = {
         Authorization: `Bearer ${config.apiKey}`,
         'Content-Type': 'application/json',
@@ -486,7 +624,7 @@ export async function requestAiCompletion({ messages, config, transport = null }
     for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
             const data = await send(url, payload, headers);
-            const text = data?.choices?.[0]?.message?.content;
+            const text = extractCompletionText(data);
             if (typeof text === 'string' && text.trim().length > 0) {
                 return { text, error: null };
             }
@@ -494,7 +632,12 @@ export async function requestAiCompletion({ messages, config, transport = null }
             break; // not retryable — nothing useful will change
         } catch (error) {
             lastError = error;
-            if (!classifyProviderError(error).retryable) {
+            const classified = classifyProviderError(error);
+            if (classified.compatibility) {
+                payload = stripCompatibilityParams(payload);
+                continue;
+            }
+            if (!classified.retryable) {
                 break;
             }
             if (attempt === 0) {
@@ -643,6 +786,7 @@ function getChannelState(channelId) {
             lastReplyAt: 0,
             lastReplyNormalized: null,
             inFlight: false,
+            inFlightSince: 0,
             lastErrorNoticeAt: 0,
             rateLimitNoticeAt: 0,
             capNoticeSent: false,
@@ -817,7 +961,15 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
     const state = getChannelState(channelId);
 
     if (state.inFlight) {
-        return; // a reply is already being generated for this ticket
+        const stuckMs = state.inFlightSince ? Date.now() - state.inFlightSince : 0;
+        if (stuckMs > 60_000) {
+            // Recover from a generation that never cleared (host freeze, etc.).
+            state.inFlight = false;
+        } else {
+            // Don't drop coalesced follow-ups that arrived while we were generating.
+            scheduleTicketAiReply(channel, ticketDataSnapshot, client, guildConfig, aiConfig);
+            return;
+        }
     }
 
     // Provider circuit breaker — silently skip while paused, but let the user know once.
@@ -827,6 +979,7 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
     }
 
     state.inFlight = true;
+    state.inFlightSince = Date.now();
     try {
         // Freshness re-check: a human may have been requested (or ticket closed) during the debounce.
         const freshTicket = await getTicketData(channel.guild.id, channelId);
@@ -889,6 +1042,7 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
         }
     } finally {
         state.inFlight = false;
+        state.inFlightSince = 0;
     }
 }
 
