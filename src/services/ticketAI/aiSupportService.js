@@ -373,10 +373,10 @@ export function buildSystemPrompt({ guildName = 'this server', ticketReason = nu
     return [
         `You are the automated ticket assistant for the Discord server "${guildName}".`,
         'You are helpful, friendly, concise, and accurate.',
-        'Your ONLY job is to answer basic user questions inside support tickets.',
+        'Your ONLY job is to read the user\'s latest message and answer it.',
         contextBlock,
         'Hard rules you must always follow:',
-        '1. ONLY answer questions with helpful, factual, concise text (max ~5 sentences unless more detail is clearly needed).',
+        '1. ALWAYS read the latest user message and answer what they actually asked. Do not stall, ignore the question, or reply with a generic form. Helpful, factual, concise text (max ~5 sentences unless more detail is clearly needed).',
         '2. You CANNOT perform any actions. You cannot give or remove roles, ban, kick, timeout or mute members, manage channels, change permissions, run bot commands, generate images, create files, access user data, or moderate the server. Never claim you did or will do any of these.',
         '3. If the user asks you to do any of those things, or anything else outside simply answering questions, politely explain that only staff can do that and tell them to press the "Request Human" button.',
         `4. If you do not know the answer, are not confident it is correct, or the request needs account-specific data you cannot see, reply with exactly ${ESCALATION_TOKEN} followed by a single short sentence. Never guess or invent answers, IDs, prices, rules, or policies.`,
@@ -384,7 +384,7 @@ export function buildSystemPrompt({ guildName = 'this server', ticketReason = nu
         '6. Never use @everyone, @here, or mention specific users/roles. Plain text only.',
         '7. Stay on-topic for server support. Refuse illegal, harmful, or NSFW requests with one short sentence.',
         '8. If the user explicitly asks for a human, staff, moderator, or real person, acknowledge politely and tell them to press the Request Human button.',
-        '9. If this is a player report, you must collect the reported player\'s username and a video (upload or clip link) before treating the report as complete. Ask for whichever of those is still missing. Do not invent a username.',
+        '9. If the user asked a question, answer it. If this ticket is also a player report and a username or video is still missing, you may mention that briefly AFTER answering — never reply with only a demand for those items when they asked something else. Do not invent a username.',
     ].filter(Boolean).join('\n');
 }
 
@@ -1125,7 +1125,9 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
             messages: chronological,
         });
 
-        if (intake?.followUp) {
+        // Only skip the model for evidence-only report updates (new username/video).
+        // Questions always fall through so the model can actually answer them.
+        if (intake?.followUp && intake.shouldUseTemplate) {
             const sentIntake = await sendAiEmbed(channel, intake.followUp);
             if (sentIntake) {
                 state.lastReplyAt = Date.now();
@@ -1142,7 +1144,9 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
                 }
             }
             return;
-        } else if (!isAiConfigured()) {
+        }
+
+        if (!isAiConfigured()) {
             return;
         }
 
@@ -1159,6 +1163,9 @@ async function generateAndPostReply(channel, ticketDataSnapshot, client, guildCo
             extraContext: [
                 guildConfig?.ticketPanelMessage ? `Server's ticket panel says: ${String(guildConfig.ticketPanelMessage).slice(0, 250)}` : null,
                 describeIntakeForPrompt(intake?.analysis || freshTicket?.aiIntake || ticketDataSnapshot?.aiIntake || null),
+                intake?.latestUserText
+                    ? `Latest user message you must answer now: ${String(intake.latestUserText).slice(0, 400)}`
+                    : null,
             ].filter(Boolean).join('\n') || null,
         });
 
