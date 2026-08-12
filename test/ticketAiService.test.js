@@ -46,6 +46,12 @@ const {
     GROQ_DEFAULT_BASE_URL,
 } = await import('../src/services/ticketAI/aiSupportService.js');
 
+const {
+    AI_WARNING_LIMIT,
+    CLOSE_TICKET_TOKEN,
+    WARN_USER_TOKEN,
+} = await import('../src/services/ticketAI/ticketAiActions.js');
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -97,22 +103,38 @@ test('resolveHumanNotifyUserId prefers the guild override, then env, then defaul
 // Prompt & reply hygiene
 // ---------------------------------------------------------------------------
 
-test('system prompt enforces answer-only behaviour', () => {
+test('system prompt scopes the assistant to answering plus its two allowed actions', () => {
     const prompt = buildSystemPrompt({ guildName: 'Test Guild' });
 
+    // Still answer-first.
     assert.match(prompt, /ONLY/i);
-    assert.match(prompt, /cannot give or remove roles/i);
-    assert.match(prompt, /ban, kick, timeout/i);
-    assert.match(prompt, /manage channels/i);
-    assert.match(prompt, /run bot commands/i);
-    assert.match(prompt, /generate images/i);
-    assert.match(prompt, /create files/i);
     assert.match(prompt, /Request Human/);
     assert.match(prompt, /Never guess or invent answers/i);
     assert.match(prompt, /answer what they actually asked/i);
     assert.match(prompt, /never reply with only a demand/i);
     assert.ok(prompt.includes(ESCALATION_TOKEN));
     assert.ok(prompt.includes('Test Guild'));
+
+    // Everything outside the two sanctioned actions is still forbidden.
+    assert.match(prompt, /cannot give or remove roles/i);
+    assert.match(prompt, /ban, timeout or mute members/i);
+    assert.match(prompt, /manage channels/i);
+    assert.match(prompt, /run bot commands/i);
+    assert.match(prompt, /generate images/i);
+    assert.match(prompt, /create files/i);
+});
+
+test('system prompt documents the close and warn actions with the 3-warning rule', () => {
+    const prompt = buildSystemPrompt({ guildName: 'Test Guild' });
+
+    assert.ok(prompt.includes(CLOSE_TICKET_TOKEN));
+    assert.ok(prompt.includes(WARN_USER_TOKEN));
+    assert.match(prompt, /exactly TWO actions/i);
+    assert.match(prompt, /fully resolved/i);
+    assert.match(prompt, /trolling/i);
+    // The kick threshold must be stated so the model never promises one itself.
+    assert.match(prompt, new RegExp(`removes the user after ${AI_WARNING_LIMIT} warnings`, 'i'));
+    assert.match(prompt, /never mention a kick yourself/i);
 });
 
 test('system prompt resists prompt injection and mass pings', () => {

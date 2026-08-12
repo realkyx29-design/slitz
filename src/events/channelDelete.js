@@ -1,32 +1,45 @@
+import { ChannelType } from 'discord.js';
+
 import { 
     getJoinToCreateConfig, 
     removeJoinToCreateTrigger,
     unregisterTemporaryChannel,
     getTicketData,
-    saveTicketData
+    deleteTicketData
 } from '../utils/database.js';
 import { getServerCounters, saveServerCounters } from '../services/serverstatsService.js';
+import { clearTicketAiState } from '../services/ticketAI/aiSupportService.js';
 import { logger } from '../utils/logger.js';
 
 export default {
     name: 'channelDelete',
     async execute(channel, client) {
         
-        if (channel.type === 0 && channel.guild) {
+        if (channel.type === ChannelType.GuildText && channel.guild) {
             try {
                 const ticketData = await getTicketData(channel.guild.id, channel.id);
-                if (ticketData && ticketData.status === 'open') {
-                    ticketData.status = 'deleted';
-                    ticketData.closedAt = new Date().toISOString();
-                    await saveTicketData(channel.guild.id, channel.id, ticketData);
-                    logger.info(`Ticket channel ${channel.id} was manually deleted in guild ${channel.guild.id}, marked as deleted`);
+                if (ticketData) {
+                    // Always tear down in-memory AI timers for the channel, even if
+                    // the ticket was already closed — otherwise a debounced reply
+                    // fires against a channel that no longer exists.
+                    clearTicketAiState(channel.id);
+
+                    // The channel is gone for good, so the row can go too instead
+                    // of lingering as a permanent "deleted" tombstone.
+                    await deleteTicketData(channel.guild.id, channel.id);
+                    logger.info('Ticket channel was deleted outside the bot; record removed', {
+                        event: 'ticket.channel_deleted',
+                        guildId: channel.guild.id,
+                        channelId: channel.id,
+                        previousStatus: ticketData.status || 'unknown',
+                    });
                 }
             } catch (err) {
                 logger.warn(`Could not clean up ticket record for deleted channel ${channel.id}:`, err);
             }
         }
 
-if (channel.type !== 2 && channel.type !== 4) {
+        if (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildCategory) {
             return;
         }
 

@@ -414,7 +414,7 @@ export function mergeIntakeState(previous, analysis) {
         hasDescription: Boolean(analysis.hasDescription),
         complete: Boolean(analysis.complete),
         loggedInitial: Boolean(previous?.loggedInitial),
-        loggedComplete: Boolean(previous?.loggedComplete) || Boolean(analysis.complete && previous?.loggedComplete),
+        loggedComplete: Boolean(previous?.loggedComplete),
         lastFingerprint: previous?.lastFingerprint || null,
     };
 }

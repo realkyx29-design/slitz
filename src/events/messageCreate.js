@@ -44,11 +44,15 @@ export default {
         return;
       }
 
-      // AI assistant: answers basic questions in open ticket channels.
-      // No-ops everywhere else (and never acts on anything — reply text only).
-      await handleTicketAiMessage(message, client);
+      // AI assistant: answers questions in open ticket channels and may close
+      // the ticket or warn/kick a trolling user. No-ops everywhere else.
+      // It never consumes prefix commands (it bails out on those itself), so a
+      // consumed message only means "the assistant is handling this one".
+      const ticketAiHandled = await handleTicketAiMessage(message, client);
 
-      await handlePrefixCommand(message, client);
+      if (!ticketAiHandled) {
+        await handlePrefixCommand(message, client);
+      }
 
       await handleLeveling(message, client);
     } catch (error) {

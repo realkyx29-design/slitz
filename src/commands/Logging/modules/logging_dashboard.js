@@ -48,6 +48,7 @@ export async function buildLoggingDashboardView(interaction, client) {
   const reportsChannel = await formatChannelMention(interaction.guild, channels.reports);
   const lifecycleChannel = await formatChannelMention(interaction.guild, guildConfig.ticketLogsChannelId);
   const transcriptChannel = await formatChannelMention(interaction.guild, guildConfig.ticketTranscriptChannelId);
+  const ticketAiChannel = await formatChannelMention(interaction.guild, guildConfig.ticketAiLogsChannelId);
 
   const ignore = loggingStatus.ignore || { users: [], channels: [] };
   const { enabled: enabledCount, total } = countEnabledCategories(loggingStatus.enabledEvents, auditEnabled);
@@ -82,15 +83,16 @@ export async function buildLoggingDashboardView(interaction, client) {
         inline: false,
       },
       {
-        name: 'Ticket Channels (read-only)',
+        name: 'Ticket Channels',
         value: [
-          `**Ticket Logs:** ${lifecycleChannel}`,
+          `**Ticket Events:** ${lifecycleChannel}`,
           `**Transcripts:** ${transcriptChannel}`,
+          `**AI Actions:** ${ticketAiChannel}`,
         ].join('\n'),
         inline: false,
       },
     )
-    .setFooter({ text: 'Ticket channels: configure via /ticket dashboard' })
+    .setFooter({ text: 'Set any channel with /logging channel · categories toggle audit events only' })
     .setTimestamp();
 
   const components = createLoggingDashboardComponents(loggingStatus.enabledEvents, auditEnabled);

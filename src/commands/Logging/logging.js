@@ -30,6 +30,9 @@ export default {
                             { name: 'Audit (moderation, messages, members…)', value: 'audit' },
                             { name: 'Applications', value: 'applications' },
                             { name: 'Reports', value: 'reports' },
+                            { name: 'Ticket events (open, close, claim…)', value: 'ticket-events' },
+                            { name: 'Ticket transcripts', value: 'ticket-transcripts' },
+                            { name: 'Ticket AI actions (close, warn, kick)', value: 'ticket-ai' },
                         ),
                 )
                 .addChannelOption((option) =>

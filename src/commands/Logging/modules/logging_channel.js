@@ -5,10 +5,15 @@ import { InteractionHelper } from '../../../utils/interactionHelper.js';
 import { logger } from '../../../utils/logger.js';
 
 import { replyUserError, ErrorTypes } from '../../../utils/errorHandler.js';
+const TICKET_DESTINATIONS = new Set(['ticket-events', 'ticket-transcripts', 'ticket-ai']);
+
 const DESTINATION_LABELS = {
   audit: 'Audit Log',
   applications: 'Applications',
   reports: 'Reports',
+  'ticket-events': 'Ticket Events',
+  'ticket-transcripts': 'Ticket Transcripts',
+  'ticket-ai': 'Ticket AI Actions',
 };
 
 export default {
@@ -25,12 +30,17 @@ export default {
       const channel = interaction.options.getChannel('channel');
       const disable = interaction.options.getBoolean('disable') ?? false;
 
+      const label = DESTINATION_LABELS[destination] || destination;
+
       if (disable) {
-        await setLogChannel(client, interaction.guildId, destination, null);
+        const cleared = await setLogChannel(client, interaction.guildId, destination, null);
+        if (!cleared) {
+          return await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: `Failed to clear the **${label}** channel. Please try again.` });
+        }
         return InteractionHelper.safeEditReply(interaction, {
           embeds: [successEmbed(
             'Channel Cleared',
-            `The **${DESTINATION_LABELS[destination]}** channel has been removed.`,
+            `The **${label}** channel has been removed.`,
           )],
         });
       }
@@ -44,12 +54,21 @@ export default {
         return await replyUserError(interaction, { type: ErrorTypes.PERMISSION, message: `I need **View Channel**, **Send Messages**, and **Embed Links** in ${channel}.` });
       }
 
-      await setLogChannel(client, interaction.guildId, destination, channel.id);
+      const saved = await setLogChannel(client, interaction.guildId, destination, channel.id);
+      if (!saved) {
+        return await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: `Failed to save the **${label}** channel. Please try again.` });
+      }
+
+      // Category toggles only apply to audit events, so don't point ticket
+      // destinations at a dashboard that cannot configure them.
+      const hint = TICKET_DESTINATIONS.has(destination)
+        ? 'Use `/ticket dashboard` for the rest of the ticket settings.'
+        : 'Use `/logging dashboard` to toggle event categories.';
 
       return InteractionHelper.safeEditReply(interaction, {
         embeds: [successEmbed(
           'Channel Updated',
-          `**${DESTINATION_LABELS[destination]}** logs will be sent to ${channel}.\nUse \`/logging dashboard\` to toggle event categories.`,
+          `**${label}** logs will be sent to ${channel}.\n${hint}`,
         )],
       });
     } catch (error) {
