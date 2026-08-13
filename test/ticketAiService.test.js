@@ -406,6 +406,34 @@ test('provider-specific keys are accepted with matching defaults', () => {
     assert.equal(isAiConfigured({ OPENROUTER_API_KEY: 'or-test' }), true);
 });
 
+test('Anthropic, Gemini, and Cerebras keys resolve to their own endpoints', () => {
+    const anthropic = normalizeAiConfig({ ANTHROPIC_API_KEY: 'sk-ant-api03-test' });
+    assert.equal(anthropic.apiKeySource, 'ANTHROPIC_API_KEY');
+    assert.equal(anthropic.apiKeyProvider, 'anthropic');
+    assert.equal(anthropic.baseUrl, 'https://api.anthropic.com/v1');
+    assert.equal(anthropic.model, 'claude-3-5-haiku-latest');
+
+    const gemini = normalizeAiConfig({ GEMINI_API_KEY: 'AIzaTestKey123' });
+    assert.equal(gemini.apiKeySource, 'GEMINI_API_KEY');
+    assert.equal(gemini.apiKeyProvider, 'gemini');
+    assert.equal(gemini.baseUrl, 'https://generativelanguage.googleapis.com/v1beta/openai');
+    assert.equal(gemini.model, 'gemini-2.5-flash');
+
+    const google = normalizeAiConfig({ GOOGLE_API_KEY: 'AIzaGoogleKey456' });
+    assert.equal(google.apiKeySource, 'GOOGLE_API_KEY');
+    assert.equal(google.baseUrl, 'https://generativelanguage.googleapis.com/v1beta/openai');
+
+    const cerebras = normalizeAiConfig({ CEREBRAS_API_KEY: 'csk-test' });
+    assert.equal(cerebras.apiKeySource, 'CEREBRAS_API_KEY');
+    assert.equal(cerebras.apiKeyProvider, 'cerebras');
+    assert.equal(cerebras.baseUrl, 'https://api.cerebras.ai/v1');
+    assert.equal(cerebras.model, 'llama-3.3-70b');
+
+    assert.equal(isAiConfigured({ ANTHROPIC_API_KEY: 'sk-ant-api03-test' }), true);
+    assert.equal(isAiConfigured({ GEMINI_API_KEY: 'AIzaTestKey123' }), true);
+    assert.equal(isAiConfigured({ CEREBRAS_API_KEY: 'csk-test' }), true);
+});
+
 test('AI_API_KEY wins over provider-specific keys', () => {
     const config = normalizeAiConfig({ AI_API_KEY: 'primary', GROQ_API_KEY: 'secondary' });
     assert.equal(config.apiKey, 'primary');
@@ -532,10 +560,13 @@ test('testAiConnection surfaces a rejected key with an actionable hint', async (
 // Groq key auto-detection (regression: gsk_ keys were sent to OpenAI)
 // ---------------------------------------------------------------------------
 
-test('detectProviderFromKey recognises Groq, OpenRouter and OpenAI prefixes', () => {
+test('detectProviderFromKey recognises Groq, OpenRouter, Anthropic, Gemini, Cerebras, and OpenAI prefixes', () => {
     assert.equal(detectProviderFromKey('gsk_live_abc'), 'groq');
     assert.equal(detectProviderFromKey('gsk-test'), 'groq');
     assert.equal(detectProviderFromKey('sk-or-v1-abc'), 'openrouter');
+    assert.equal(detectProviderFromKey('sk-ant-api03-abc'), 'anthropic');
+    assert.equal(detectProviderFromKey('AIzaSyTestKey123'), 'gemini');
+    assert.equal(detectProviderFromKey('csk-abc123'), 'cerebras');
     assert.equal(detectProviderFromKey('sk-proj-abc'), 'openai');
     assert.equal(detectProviderFromKey('not-a-key'), null);
     assert.equal(detectProviderFromKey(''), null);
@@ -547,6 +578,38 @@ test('a Groq key in AI_API_KEY is routed to Groq, not OpenAI', () => {
     assert.equal(config.apiKeyProvider, 'groq');
     assert.equal(config.baseUrl, GROQ_DEFAULT_BASE_URL);
     assert.equal(config.model, GROQ_DEFAULT_MODEL);
+});
+
+test('an Anthropic or Gemini key in AI_API_KEY is routed to its own provider', () => {
+    const anthropic = normalizeAiConfig({ AI_API_KEY: 'sk-ant-api03-abc123' });
+    assert.equal(anthropic.apiKeySource, 'AI_API_KEY');
+    assert.equal(anthropic.apiKeyProvider, 'anthropic');
+    assert.equal(anthropic.baseUrl, 'https://api.anthropic.com/v1');
+    assert.equal(anthropic.model, 'claude-3-5-haiku-latest');
+
+    const gemini = normalizeAiConfig({ AI_API_KEY: 'AIzaSyTestKey123' });
+    assert.equal(gemini.apiKeySource, 'AI_API_KEY');
+    assert.equal(gemini.apiKeyProvider, 'gemini');
+    assert.equal(gemini.baseUrl, 'https://generativelanguage.googleapis.com/v1beta/openai');
+    assert.equal(gemini.model, 'gemini-2.5-flash');
+});
+
+test('stock .env.example OpenAI URL/model do not override a non-OpenAI key', () => {
+    const anthropic = normalizeAiConfig({
+        AI_API_KEY: 'sk-ant-api03-abc123',
+        AI_API_BASE_URL: 'https://api.openai.com/v1',
+        AI_TICKET_MODEL: 'gpt-4o-mini',
+    });
+    assert.equal(anthropic.baseUrl, 'https://api.anthropic.com/v1');
+    assert.equal(anthropic.model, 'claude-3-5-haiku-latest');
+
+    const gemini = normalizeAiConfig({
+        GEMINI_API_KEY: 'AIzaTestKey123',
+        AI_API_BASE_URL: 'https://api.openai.com/v1',
+        AI_TICKET_MODEL: 'gpt-4o-mini',
+    });
+    assert.equal(gemini.baseUrl, 'https://generativelanguage.googleapis.com/v1beta/openai');
+    assert.equal(gemini.model, 'gemini-2.5-flash');
 });
 
 test('stock .env.example OpenAI URL/model do not override a Groq key', () => {

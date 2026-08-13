@@ -175,6 +175,11 @@ export const PROVIDER_PRESETS = {
     together: { baseUrl: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.1-8B-Instruct-Turbo' },
     xai: { baseUrl: 'https://api.x.ai/v1', model: 'grok-2-latest' },
     mistral: { baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+    // Anthropic exposes an OpenAI-compatible /chat/completions endpoint.
+    anthropic: { baseUrl: 'https://api.anthropic.com/v1', model: 'claude-3-5-haiku-latest' },
+    // Google's OpenAI compatibility layer (Gemini). Thinking stays off by default there.
+    gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
+    cerebras: { baseUrl: 'https://api.cerebras.ai/v1', model: 'llama-3.3-70b' },
 };
 
 export const AI_KEY_ENV_VARS = [
@@ -186,6 +191,11 @@ export const AI_KEY_ENV_VARS = [
     { name: 'TOGETHER_API_KEY', ...PROVIDER_PRESETS.together },
     { name: 'XAI_API_KEY', ...PROVIDER_PRESETS.xai },
     { name: 'MISTRAL_API_KEY', ...PROVIDER_PRESETS.mistral },
+    { name: 'ANTHROPIC_API_KEY', ...PROVIDER_PRESETS.anthropic },
+    { name: 'GEMINI_API_KEY', ...PROVIDER_PRESETS.gemini },
+    // Google API keys (AIza…) work with the Gemini endpoints too.
+    { name: 'GOOGLE_API_KEY', ...PROVIDER_PRESETS.gemini },
+    { name: 'CEREBRAS_API_KEY', ...PROVIDER_PRESETS.cerebras },
 ];
 
 /** Values people copy out of .env.example — present, but not a real choice. */
@@ -212,6 +222,8 @@ export function isStockExampleModel(model) {
  * Infer the provider from the key itself. Pasting a Groq `gsk_...` key into
  * `AI_API_KEY` (the documented variable) used to send it to api.openai.com
  * with `gpt-4o-mini`, which Groq keys cannot use — every request 401'd.
+ * The same applies to Anthropic (`sk-ant-...`), Gemini (`AIza...`), and
+ * Cerebras (`csk-...`) keys.
  */
 export function detectProviderFromKey(key) {
     const value = cleanSecret(key).toLowerCase();
@@ -219,6 +231,8 @@ export function detectProviderFromKey(key) {
     if (value.startsWith('gsk_') || value.startsWith('gsk-')) return 'groq';
     if (value.startsWith('sk-or-')) return 'openrouter';
     if (value.startsWith('sk-ant-')) return 'anthropic';
+    if (value.startsWith('aiza')) return 'gemini'; // Google API keys start with AIza
+    if (value.startsWith('csk-')) return 'cerebras';
     if (value.startsWith('sk-')) return 'openai';
     return null;
 }
@@ -324,7 +338,7 @@ export function getAiConfigStatus(env = process.env) {
             ok: false,
             status: AI_STATUS.MISSING_KEY,
             config,
-            summary: 'No API key found. Set `AI_API_KEY` (or `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `GROQ_API_KEY`) in the bot environment and restart the bot.',
+            summary: 'No API key found. Set `AI_API_KEY` (or a provider variable such as `OPENAI_API_KEY`, `GROQ_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or `CEREBRAS_API_KEY`) in the bot environment and restart the bot.',
         };
     }
 
@@ -569,7 +583,7 @@ export function describeProviderError(error) {
             : 'The provider rejected the request (400 Bad Request). Check AI_API_BASE_URL and AI_TICKET_MODEL; the provider did not return a detailed error.';
     }
     if (status === 401) {
-        return 'The API key was rejected by the provider (401 Unauthorized). A Groq key (starts with gsk_) must go to api.groq.com — not OpenAI. Check that the key is active and matches AI_API_BASE_URL.';
+        return 'The API key was rejected by the provider (401 Unauthorized). Check that the key matches AI_API_BASE_URL: Groq keys (gsk_) must go to api.groq.com, Anthropic keys (sk-ant-) to api.anthropic.com, Google keys (AIza…) to generativelanguage.googleapis.com, and Cerebras keys (csk-) to api.cerebras.ai. Also check that the key is active.';
     }
     if (status === 403) {
         return 'The provider refused the request (403 Forbidden) — the key may lack access to this model, or billing/region is blocked.';

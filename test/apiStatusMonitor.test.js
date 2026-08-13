@@ -29,7 +29,7 @@ function successfulFetch(url) {
   return Promise.resolve(response({ ok: true }));
 }
 
-test('returns Bot, Discord, and GitHub as working with response times', async () => {
+test('returns Bot, Discord, GitHub, Roblox, OpenAI, Cloudflare, Steam, and Google as working with response times', async () => {
   const monitor = createApiStatusMonitor(readyClient(), {
     fetchImpl: successfulFetch,
     cacheMs: 0,
@@ -44,13 +44,18 @@ test('returns Bot, Discord, and GitHub as working with response times', async ()
     { id: 'bot', name: 'Bot API', state: SERVICE_STATE.WORKING },
     { id: 'discord', name: 'Discord API', state: SERVICE_STATE.WORKING },
     { id: 'github', name: 'GitHub API', state: SERVICE_STATE.WORKING },
+    { id: 'roblox', name: 'Roblox API', state: SERVICE_STATE.WORKING },
+    { id: 'openai', name: 'OpenAI API', state: SERVICE_STATE.WORKING },
+    { id: 'cloudflare', name: 'Cloudflare API', state: SERVICE_STATE.WORKING },
+    { id: 'steam', name: 'Steam Web API', state: SERVICE_STATE.WORKING },
+    { id: 'google', name: 'Google APIs', state: SERVICE_STATE.WORKING },
   ]);
   assert.equal(snapshot.services[0].pingMs, 25);
   assert.ok(snapshot.services.slice(1).every((service) => Number.isInteger(service.pingMs)));
   assert.deepEqual(snapshot.summary, {
     overall: 'operational',
-    total: 3,
-    working: 3,
+    total: 8,
+    working: 8,
     degraded: 0,
     offline: 0,
   });
@@ -75,6 +80,60 @@ test('marks a reachable API as degraded when its provider reports an incident', 
   assert.equal(github.message, 'Degraded API requests');
   assert.equal(github.reason, 'provider_incident');
   assert.equal(snapshot.summary.overall, 'degraded');
+});
+
+test('treats an auth-required 401 probe as reachable instead of an error', async () => {
+  const fetchImpl = async (url) => {
+    if (url === 'https://api.openai.com/v1/models') return response({ error: { message: 'Missing bearer authentication' } }, 401);
+    if (url.includes('status')) return response({ status: { indicator: 'none' } });
+    return response({ ok: true });
+  };
+
+  const snapshot = await createApiStatusMonitor(readyClient(), { fetchImpl, cacheMs: 0 }).getSnapshot();
+  const openai = snapshot.services.find((service) => service.id === 'openai');
+
+  assert.equal(openai.state, SERVICE_STATE.WORKING);
+  assert.equal(openai.httpStatus, 401);
+  assert.match(openai.message, /requires authentication/);
+  assert.ok(Number.isInteger(openai.pingMs));
+  assert.equal(snapshot.summary.overall, 'operational');
+});
+
+test('detects a Roblox incident through its status.io feed', async () => {
+  const fetchImpl = async (url) => {
+    if (url === 'https://4277980205320394.hostedstatus.com/1.0/status/59db90dbcdeb2f04dadcf16d') {
+      return response({
+        result: { status_overall: { status: 'Partial Service Disruption', status_code: 400 } },
+      });
+    }
+    if (url.includes('status')) return response({ status: { indicator: 'none' } });
+    return response({ ok: true });
+  };
+
+  const snapshot = await createApiStatusMonitor(readyClient(), { fetchImpl, cacheMs: 0 }).getSnapshot();
+  const roblox = snapshot.services.find((service) => service.id === 'roblox');
+
+  assert.equal(roblox.state, SERVICE_STATE.DEGRADED);
+  assert.equal(roblox.indicator, '🚦');
+  assert.equal(roblox.message, 'Partial Service Disruption');
+  assert.equal(roblox.reason, 'provider_incident');
+  assert.equal(snapshot.summary.overall, 'degraded');
+});
+
+test('probe-only services (Steam, Google) stay healthy without a status feed', async () => {
+  const fetchImpl = async (url) => {
+    if (url.includes('status')) return response({ status: { indicator: 'none' } });
+    return response({ ok: true });
+  };
+
+  const snapshot = await createApiStatusMonitor(readyClient(), { fetchImpl, cacheMs: 0 }).getSnapshot();
+  const steam = snapshot.services.find((service) => service.id === 'steam');
+  const google = snapshot.services.find((service) => service.id === 'google');
+
+  assert.equal(steam.state, SERVICE_STATE.WORKING);
+  assert.equal(steam.message, 'Working normally.');
+  assert.equal(google.state, SERVICE_STATE.WORKING);
+  assert.equal(google.message, 'Working normally.');
 });
 
 test('classifies rate limiting as degraded instead of offline', async () => {
@@ -104,7 +163,7 @@ test('isolates a failed provider and keeps a complete snapshot', async () => {
   const discord = snapshot.services.find((service) => service.id === 'discord');
   const github = snapshot.services.find((service) => service.id === 'github');
 
-  assert.equal(snapshot.services.length, 3);
+  assert.equal(snapshot.services.length, 8);
   assert.equal(discord.state, SERVICE_STATE.OFFLINE);
   assert.equal(discord.indicator, '❌');
   assert.equal(discord.pingMs, null);
@@ -185,14 +244,14 @@ test('deduplicates concurrent checks and serves the short-lived cache', async ()
 
   const [first, second] = await Promise.all([monitor.getSnapshot(), monitor.getSnapshot()]);
   assert.strictEqual(first, second);
-  assert.equal(requestCount, 4);
+  assert.equal(requestCount, 12);
 
   const cached = await monitor.getSnapshot();
   assert.strictEqual(cached, first);
-  assert.equal(requestCount, 4);
+  assert.equal(requestCount, 12);
 
   now += 10_001;
   const refreshed = await monitor.getSnapshot();
   assert.notStrictEqual(refreshed, first);
-  assert.equal(requestCount, 8);
+  assert.equal(requestCount, 24);
 });

@@ -157,7 +157,8 @@ Add an OpenAI-compatible API key to your environment and restart the bot:
 AI_TICKETS_ENABLED=true
 AI_API_KEY=your_api_key_here
 # Leave the next two blank to auto-detect from the key prefix
-# (gsk_ → Groq, sk-or- → OpenRouter, sk- → OpenAI).
+# (gsk_ → Groq, sk-or- → OpenRouter, sk-ant- → Anthropic,
+#  AIza… → Gemini, csk- → Cerebras, sk- → OpenAI).
 # AI_API_BASE_URL=
 # AI_TICKET_MODEL=
 TICKET_HUMAN_NOTIFY_USER_ID=1377402826514235442   # user pinged on "Request Human"
@@ -165,12 +166,16 @@ TICKET_HUMAN_NOTIFY_USER_ID=1377402826514235442   # user pinged on "Request Huma
 
 `AI_API_KEY` is the documented variable. The key prefix is detected automatically,
 so a Groq key (`gsk_...`) pasted there is routed to Groq — it is **not** sent to
-OpenAI. A provider-specific key already in your environment is also picked up
-(with a matching default endpoint and model):
+OpenAI. The same holds for Anthropic (`sk-ant-...`), Gemini/Google (`AIza...`), and
+Cerebras (`csk-...`) keys. A provider-specific key already in your environment is
+also picked up (with a matching default endpoint and model):
 
 | Variable | Default endpoint | Default model |
 | --- | --- | --- |
 | `AI_API_KEY` (`gsk_...`) | `https://api.groq.com/openai/v1` | `qwen/qwen3.6-27b` |
+| `AI_API_KEY` (`sk-ant-...`) | `https://api.anthropic.com/v1` | `claude-3-5-haiku-latest` |
+| `AI_API_KEY` (`AIza...`) | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` |
+| `AI_API_KEY` (`csk-...`) | `https://api.cerebras.ai/v1` | `llama-3.3-70b` |
 | `AI_API_KEY` (`sk-...`) | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | `openai/gpt-4o-mini` |
@@ -179,6 +184,9 @@ OpenAI. A provider-specific key already in your environment is also picked up
 | `TOGETHER_API_KEY` | `https://api.together.xyz/v1` | `Llama-3.1-8B-Instruct-Turbo` |
 | `XAI_API_KEY` | `https://api.x.ai/v1` | `grok-2-latest` |
 | `MISTRAL_API_KEY` | `https://api.mistral.ai/v1` | `mistral-small-latest` |
+| `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1` | `claude-3-5-haiku-latest` |
+| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | `https://generativelanguage.googleapis.com/v1beta/openai` | `gemini-2.5-flash` |
+| `CEREBRAS_API_KEY` | `https://api.cerebras.ai/v1` | `llama-3.3-70b` |
 
 A *custom* `AI_API_BASE_URL` / `AI_TICKET_MODEL` still overrides the defaults.
 The stock `.env.example` OpenAI values (`https://api.openai.com/v1`, `gpt-4o-mini`)
