@@ -389,6 +389,38 @@ h1 {
   color: #fff;
 }
 
+.service-mark.roblox {
+  border-color: rgba(226, 35, 26, 0.32);
+  background: rgba(226, 35, 26, 0.12);
+  color: #ff8f88;
+}
+
+.service-mark.openai {
+  border-color: rgba(16, 163, 127, 0.32);
+  background: rgba(16, 163, 127, 0.12);
+  color: #7fe7c4;
+}
+
+.service-mark.cloudflare {
+  border-color: rgba(246, 130, 31, 0.32);
+  background: rgba(246, 130, 31, 0.12);
+  color: #ffb877;
+}
+
+.service-mark.steam {
+  border-color: rgba(102, 192, 244, 0.32);
+  background: rgba(102, 192, 244, 0.12);
+  color: #a9dbfb;
+  font-size: 0.78rem;
+}
+
+.service-mark.google {
+  border-color: rgba(66, 133, 244, 0.32);
+  background: rgba(66, 133, 244, 0.12);
+  color: #a9c8ff;
+  font-size: 0.78rem;
+}
+
 .service-heading h3 { font-size: 1.05rem; letter-spacing: -0.015em; }
 .service-heading p {
   margin: 3px 0 0;

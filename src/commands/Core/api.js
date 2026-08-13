@@ -110,7 +110,7 @@ export async function refreshStatusInteraction(interaction) {
 export default {
   data: new SlashCommandBuilder()
     .setName('api')
-    .setDescription('Check the Bot, Discord, and GitHub API status'),
+    .setDescription('Check the live status of the bot and connected third-party APIs'),
 
   async prefixExecute(interaction) {
     try {

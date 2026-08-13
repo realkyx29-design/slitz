@@ -17,12 +17,16 @@ const DEFAULT_DEGRADED_PING_MS = 750;
 const DEFAULT_CACHE_MS = 10_000;
 const CLIENTS = new WeakMap();
 
+// Every third-party API the bot reports on. Each entry needs an unauthenticated
+// (or auth-gated, see `reachableStatuses`) probe URL; `statusUrl` is optional and
+// points at the provider's public status feed where one exists.
 const EXTERNAL_SERVICES = Object.freeze([
   Object.freeze({
     id: 'discord',
     name: 'Discord API',
     probeUrl: 'https://discord.com/api/v10/gateway',
     statusUrl: 'https://discordstatus.com/api/v2/status.json',
+    statusFormat: 'statuspage',
     headers: Object.freeze({ Accept: 'application/json' }),
   }),
   Object.freeze({
@@ -30,10 +34,54 @@ const EXTERNAL_SERVICES = Object.freeze([
     name: 'GitHub API',
     probeUrl: 'https://api.github.com/meta',
     statusUrl: 'https://www.githubstatus.com/api/v2/status.json',
+    statusFormat: 'statuspage',
     headers: Object.freeze({
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
     }),
+  }),
+  Object.freeze({
+    id: 'roblox',
+    name: 'Roblox API',
+    probeUrl: 'https://users.roblox.com/v1/users/1',
+    // Roblox publishes its status feed via status.io, not Statuspage.
+    statusUrl: 'https://4277980205320394.hostedstatus.com/1.0/status/59db90dbcdeb2f04dadcf16d',
+    statusFormat: 'statusio',
+    headers: Object.freeze({ Accept: 'application/json' }),
+  }),
+  Object.freeze({
+    id: 'openai',
+    name: 'OpenAI API',
+    probeUrl: 'https://api.openai.com/v1/models',
+    statusUrl: 'https://status.openai.com/api/v2/status.json',
+    statusFormat: 'statuspage',
+    // /v1/models requires a bearer key, so an unauthenticated 401/403 still
+    // proves the API itself is reachable.
+    reachableStatuses: Object.freeze([401, 403]),
+    headers: Object.freeze({ Accept: 'application/json' }),
+  }),
+  Object.freeze({
+    id: 'cloudflare',
+    name: 'Cloudflare API',
+    probeUrl: 'https://api.cloudflare.com/client/v4/',
+    statusUrl: 'https://www.cloudflarestatus.com/api/v2/status.json',
+    statusFormat: 'statuspage',
+    headers: Object.freeze({ Accept: 'application/json' }),
+  }),
+  Object.freeze({
+    id: 'steam',
+    name: 'Steam Web API',
+    // GetServerInfo works without an API key; Valve has no public status feed.
+    probeUrl: 'https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/',
+    statusUrl: null,
+    headers: Object.freeze({ Accept: 'application/json' }),
+  }),
+  Object.freeze({
+    id: 'google',
+    name: 'Google APIs',
+    probeUrl: 'https://www.googleapis.com/discovery/v1/apis',
+    statusUrl: null,
+    headers: Object.freeze({ Accept: 'application/json' }),
   }),
 ]);
 
@@ -169,7 +217,13 @@ function classifyProbe(definition, probe, degradedPingMs) {
 
   const { httpStatus, pingMs } = probe;
 
-  if (httpStatus >= 200 && httpStatus < 400) {
+  // Some providers only expose authenticated endpoints. A 401/403 without
+  // credentials is still evidence the API itself is up, when the definition
+  // declares those statuses as reachable.
+  const authRequired = (definition.reachableStatuses ?? []).includes(httpStatus);
+  const reachable = authRequired || (httpStatus >= 200 && httpStatus < 400);
+
+  if (reachable) {
     if (pingMs !== null && pingMs >= degradedPingMs) {
       return serviceResult({
         id: definition.id,
@@ -187,7 +241,9 @@ function classifyProbe(definition, probe, degradedPingMs) {
       name: definition.name,
       state: SERVICE_STATE.WORKING,
       pingMs,
-      message: 'Working normally.',
+      message: authRequired
+        ? 'Reachable — the endpoint requires authentication.'
+        : 'Working normally.',
       httpStatus,
     });
   }
@@ -217,7 +273,12 @@ function classifyProbe(definition, probe, degradedPingMs) {
   });
 }
 
-function interpretProviderStatus(payload) {
+function interpretProviderStatus(payload, format = 'statuspage') {
+  if (format === 'statusio') return interpretStatusIoStatus(payload);
+  return interpretStatuspageStatus(payload);
+}
+
+function interpretStatuspageStatus(payload) {
   const indicator = cleanText(payload?.status?.indicator, '', 32).toLowerCase();
   const description = cleanText(payload?.status?.description, 'Provider reports an active incident.');
 
@@ -230,24 +291,51 @@ function interpretProviderStatus(payload) {
   return null;
 }
 
+/**
+ * status.io feeds (used by Roblox) expose `result.status_overall` with a
+ * status code: 100 operational, 300 degraded performance, 400 partial service
+ * disruption, 500 service disruption, 600 under maintenance.
+ */
+function interpretStatusIoStatus(payload) {
+  const overall = payload?.result?.status_overall;
+  const statusCode = Number(overall?.status_code);
+  const description = cleanText(overall?.status, 'Provider reports an active incident.');
+
+  // status.io codes: 100 operational, 300 degraded performance, 400 partial
+  // service disruption, 500 service disruption, 600 under maintenance.
+  if (!Number.isInteger(statusCode) || statusCode < 300) return null;
+
+  const indicator = statusCode >= 600
+    ? 'maintenance'
+    : statusCode >= 500
+      ? 'critical'
+      : statusCode >= 400
+        ? 'major'
+        : 'minor';
+
+  return { reason: indicator === 'maintenance' ? 'maintenance' : 'provider_incident', description };
+}
+
 async function checkExternalService(definition, options) {
   const [probe, providerStatus] = await Promise.all([
     timedFetch(definition.probeUrl, {
       ...options,
       headers: definition.headers,
     }),
-    timedFetch(definition.statusUrl, {
-      ...options,
-      parseJson: true,
-    }),
+    definition.statusUrl
+      ? timedFetch(definition.statusUrl, {
+        ...options,
+        parseJson: true,
+      })
+      : Promise.resolve(null),
   ]);
 
   const directResult = classifyProbe(definition, probe, options.degradedPingMs);
-  if (directResult.state !== SERVICE_STATE.WORKING || providerStatus.kind !== 'response') {
+  if (directResult.state !== SERVICE_STATE.WORKING || !providerStatus || providerStatus.kind !== 'response') {
     return directResult;
   }
 
-  const incident = interpretProviderStatus(providerStatus.data);
+  const incident = interpretProviderStatus(providerStatus.data, definition.statusFormat);
   if (!incident) return directResult;
 
   return serviceResult({
@@ -357,14 +445,12 @@ export function createApiStatusMonitor(client, options = {}) {
 
     const checks = await Promise.allSettled([
       Promise.resolve().then(() => checkBotApi(client, { degradedPingMs })),
-      checkExternalService(EXTERNAL_SERVICES[0], requestOptions),
-      checkExternalService(EXTERNAL_SERVICES[1], requestOptions),
+      ...EXTERNAL_SERVICES.map((definition) => checkExternalService(definition, requestOptions)),
     ]);
 
     const definitions = [
       { id: 'bot', name: 'Bot API' },
-      EXTERNAL_SERVICES[0],
-      EXTERNAL_SERVICES[1],
+      ...EXTERNAL_SERVICES,
     ];
 
     const services = checks.map((check, index) => (

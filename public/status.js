@@ -9,6 +9,11 @@
     bot: 'Bot API',
     discord: 'Discord API',
     github: 'GitHub API',
+    roblox: 'Roblox API',
+    openai: 'OpenAI API',
+    cloudflare: 'Cloudflare API',
+    steam: 'Steam Web API',
+    google: 'Google APIs',
   });
   const STATE_UI = Object.freeze({
     working: Object.freeze({ indicator: '✅', label: 'Working normally' }),
@@ -103,7 +108,7 @@
       state: 'operational',
       icon: '✅',
       title: 'All systems operational',
-      detail: 'Bot, Discord, and GitHub APIs are working normally.',
+      detail: 'The bot and every connected API are working normally.',
     };
   }
 
