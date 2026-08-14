@@ -9,13 +9,24 @@ import { logEvent } from '../../utils/moderation.js';
 import { logger } from '../../utils/logger.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 import { replyUserError, ErrorTypes } from '../../utils/errorHandler.js';
-import { sanitizeInput } from '../../utils/validation.js';
 
 const TEXT_CHANNEL_TYPES = [
     ChannelType.GuildText,
     ChannelType.GuildAnnouncement,
 ];
 const IMAGE_FILE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/i;
+
+export function sanitizeSayMessage(input, maxLength = 2000) {
+    if (typeof input !== 'string') return '';
+
+    return input
+        // Normalize every common line ending without removing intentional breaks.
+        .replace(/\r\n?|\u2028|\u2029/g, '\n')
+        // Remove unsafe control characters, while preserving newlines and tabs.
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+        .trim()
+        .substring(0, maxLength);
+}
 
 export function isImageAttachment(attachment) {
     if (!attachment) return false;
@@ -85,7 +96,7 @@ export default {
         }
 
         const rawMessage = interaction.options.getString('message');
-        const message = sanitizeInput(rawMessage, 2000);
+        const message = sanitizeSayMessage(rawMessage, 2000);
         const image = interaction.options.getAttachment('image');
 
         if (!message && !image) {
