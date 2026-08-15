@@ -21,6 +21,7 @@ import { getAiConfigStatus, maskApiKey } from './services/ticketAI/aiSupportServ
 import { initializeMusic } from './services/music/riffySetup.js';
 import { shutdownMusic } from './services/music/playerHandler.js';
 import { stopAllSessions } from './services/trading/tradeSessionManager.js';
+import { stopAllAlerts } from './services/trading/tradeAlerts.js';
 import { EXPECTED_SCHEMA_VERSION, EXPECTED_SCHEMA_LABEL } from './config/database/schemaVersion.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -391,6 +392,10 @@ class TitanBot extends Client {
       logger.info('Stopping live trade trackers...');
       const stoppedTrackers = await stopAllSessions('shutdown');
       logger.info(`✅ Live trade trackers stopped (${stoppedTrackers})`);
+
+      logger.info('Stopping trade price alerts...');
+      const stoppedAlerts = await stopAllAlerts('shutdown');
+      logger.info(`✅ Trade price alerts stopped (${stoppedAlerts})`);
 
       if (this.webServer) {
         logger.info('Closing web server...');

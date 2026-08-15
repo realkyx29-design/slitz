@@ -8,12 +8,20 @@ import { MessageFlags } from 'discord.js';
 import { logger } from '../utils/logger.js';
 import { checkRateLimit } from '../utils/rateLimiter.js';
 import {
+    clampDuration,
+    clampInterval,
+    createSession,
     getSession,
     refreshSession,
+    SESSION_LIMITS,
     setSessionAnalysis,
     stopSession,
 } from '../services/trading/tradeSessionManager.js';
 import { analyzeMarket, isAnalystEnabled } from '../services/trading/tradeAnalyst.js';
+import { getQuote, MarketDataError, normalizeQuery } from '../services/trading/marketDataService.js';
+import { calculatePosition, calculateTwentyFourHourWhatIf } from '../services/trading/positionCalculator.js';
+import { buildTradeButtons, buildTradeEmbed } from '../services/trading/tradeEmbed.js';
+import { toNumber } from '../utils/tradeFormat.js';
 
 const EXPIRED_MESSAGE = 'This tracker has already stopped. Run `/trade` again to start a new one.';
 
@@ -172,4 +180,123 @@ export const tradeAnalyzeButton = {
     },
 };
 
-export default [tradeRefreshButton, tradeStopButton, tradeAnalyzeButton];
+export const tradeTrackButton = {
+    name: 'trade_track',
+    async execute(interaction, client, args = []) {
+        const [rawQuery, rawAmount] = args;
+        const query = normalizeQuery(rawQuery);
+        const amount = toNumber(rawAmount);
+
+        if (!query) {
+            await ack(interaction);
+            await quietFollowUp(interaction, 'That signal card is missing its coin. Run `/trade signals` again.');
+            return;
+        }
+
+        // Spinning up a poller from a button counts as tracker creation too.
+        const allowed = await checkRateLimit(`trade:${interaction.user.id}`, 5, 60_000);
+
+        if (!allowed) {
+            await ack(interaction);
+            await quietFollowUp(interaction, 'You are starting trackers too quickly. Wait a minute and try again.');
+            return;
+        }
+
+        await interaction.deferReply().catch(() => {});
+
+        let quote;
+
+        try {
+            quote = await getQuote(query, { force: true });
+        } catch (error) {
+            const message = error instanceof MarketDataError && error.code === 'rate_limited'
+                ? 'The market data provider is rate limiting requests right now. Try again in a minute.'
+                : 'Could not load market data right now. Please try again shortly.';
+            await interaction.editReply({ content: message }).catch(() => {});
+            return;
+        }
+
+        if (!quote) {
+            await interaction.editReply({
+                content: `No market data found for **${query.slice(0, 60)}** — the token may have been pulled.`,
+            }).catch(() => {});
+            return;
+        }
+
+        // The signal's hypothetical stake becomes the tracked what-if position,
+        // entered at the current price.
+        const position = amount !== null && amount > 0
+            ? calculatePosition({ amount, entryPrice: quote.price, currentPrice: quote.price })
+            : null;
+
+        const whatIf = amount !== null && amount > 0
+            ? calculateTwentyFourHourWhatIf({ amount, currentPrice: quote.price, changePercent24h: quote.change24h })
+            : null;
+
+        const aiEnabled = isAnalystEnabled();
+        const intervalMs = clampInterval(null);
+        const durationMs = clampDuration(null);
+
+        const embed = buildTradeEmbed({
+            quote,
+            position,
+            whatIf,
+            analysis: null,
+            live: {
+                active: true,
+                intervalMs,
+                updateCount: 0,
+                maxUpdates: Math.max(1, Math.floor(durationMs / intervalMs)),
+            },
+        });
+
+        const sent = await interaction.editReply({
+            content: '',
+            embeds: [embed],
+            components: buildTradeButtons('pending', { active: true, aiEnabled }),
+            allowedMentions: { parse: [] },
+        }).catch(() => null);
+
+        if (!sent || typeof sent.edit !== 'function') {
+            return;
+        }
+
+        const notifyUserId = interaction.user.id;
+
+        const created = createSession({
+            message: sent,
+            query,
+            quote,
+            guildId: interaction.guildId,
+            channelId: interaction.channelId,
+            userId: interaction.user.id,
+            notifyUserId,
+            position: position ? { amount: position.amount, entryPrice: position.entryPrice } : null,
+            intervalMs,
+            durationMs,
+            aiEnabled,
+        });
+
+        if (!created.ok) {
+            await sent.edit({
+                components: buildTradeButtons('pending', { active: false, aiEnabled }),
+            }).catch(() => {});
+            await quietFollowUp(interaction, created.reason);
+            return;
+        }
+
+        await sent.edit({
+            components: buildTradeButtons(created.session.id, { active: true, aiEnabled }),
+        }).catch((error) => {
+            logger.warn('trade: failed to attach session buttons', { error: error.message });
+        });
+
+        logger.info('trade: tracker started from signal card', {
+            coin: quote.symbol,
+            sessionId: created.session.id,
+            userId: interaction.user.id,
+        });
+    },
+};
+
+export default [tradeRefreshButton, tradeStopButton, tradeAnalyzeButton, tradeTrackButton];

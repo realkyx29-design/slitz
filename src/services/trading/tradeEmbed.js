@@ -50,6 +50,7 @@ export const TRADE_BUTTON_IDS = {
     REFRESH: 'trade_refresh',
     STOP: 'trade_stop',
     ANALYZE: 'trade_analyze',
+    TRACK: 'trade_track',
 };
 
 function colorFor(direction) {
@@ -360,11 +361,281 @@ export function buildAlertContent(userId, quote, position) {
     return line.slice(0, 2000);
 }
 
+/**
+ * Scenario table rendered as a monospace block:
+ * `+50%    $150.00    +$50.00`.
+ */
+function scenarioTable(scenarios) {
+    const rows = scenarios.map((scenario) => [
+        scenario.label,
+        formatPrice(scenario.value),
+        formatSignedMoney(scenario.profit),
+    ]);
+
+    return `\`\`\`\n${buildAlignedRows(rows)}\n\`\`\``;
+}
+
+/**
+ * The momentum-signal card (subcommand `signals`).
+ *
+ * @param {object} input
+ * @param {object} input.signal  Result of signalEngine.buildSignal().
+ */
+export function buildSignalEmbed({ signal }) {
+    const { primary: quote, stake, scenarios, candidates, budget } = signal;
+
+    const blockLines = [buildHeaderBlock(quote)];
+    const sections = [`\`\`\`\n${blockLines.join('\n')}\n\`\`\``];
+
+    const embed = createEmbed({
+        title: `Momentum Signal · ${displayName(quote.name)} · ${quote.symbol}`,
+        description: sections.join(''),
+        color: colorFor(directionOf(quote.change24h)),
+        url: quote.pairUrl || null,
+        thumbnail: quote.image || null,
+        timestamp: true,
+    });
+
+    const why = [
+        quote.reasons?.length ? `Signals: ${quote.reasons.join('; ')}.` : null,
+        quote.warnings?.length ? `Watch-outs: ${quote.warnings.join('; ')}.` : null,
+        `Setup score ${quote.score}/100 · ${quote.risk} risk.`,
+    ].filter(Boolean).join('\n');
+
+    embed.addFields({
+        name: 'Why this coin was flagged',
+        value: why.slice(0, 1024),
+        inline: false,
+    });
+
+    embed.addFields({
+        name: `Hypothetical entry — ${formatPrice(stake.amount)} of ${formatPrice(budget)} budget`,
+        value: `Risk-adjusted sizing: ${stake.reason}. `
+            + 'This is a what-if number, not an instruction — the bot cannot buy anything.',
+        inline: false,
+    });
+
+    if (scenarios.length) {
+        embed.addFields({
+            name: `If you put in ${formatPrice(stake.amount)}, scenarios say`,
+            value: `${scenarioTable(scenarios)}*Hypothetical math (stake × move), ignoring fees, slippage and taxes. Not a forecast.*`,
+            inline: false,
+        });
+    }
+
+    if (candidates.length) {
+        embed.addFields({
+            name: 'Also heading up',
+            value: candidates
+                .map((coin) => `**${coin.symbol}** · ${formatPrice(coin.price)} · ${formatPercent(coin.change24h)} 24h · score ${coin.score}/100`)
+                .join('\n')
+                .slice(0, 1024),
+            inline: false,
+        });
+    }
+
+    embed.addFields({
+        name: 'Source',
+        value: `${signal.source} · ${SOURCE_LABELS[quote.source] || 'market data'}\n`
+            + '*Read-only research. Memecoins can go to zero — this is not financial advice.*'.slice(0, 1024),
+        inline: false,
+    });
+
+    return embed;
+}
+
+/** Ping line for the signal card. Mentions live outside the embed on purpose. */
+export function buildSignalContent(userId, signal) {
+    if (!userId || !signal) {
+        return '';
+    }
+
+    const { primary: quote, stake, scenarios } = signal;
+    const arrow = arrowFor(quote.change24h);
+    const changeText = toNumber(quote.change24h) === null ? '' : ` ${arrow} ${formatPercent(quote.change24h)} 24h`;
+
+    const headline = scenarios[0]
+        ? ` · hypothetical ${formatPrice(stake.amount)} in → ${scenarios[0].label.toLowerCase()}: `
+          + `${formatPrice(scenarios[0].value)} (${formatSignedMoney(scenarios[0].profit)})`
+        : '';
+
+    return `<@${userId}> Momentum signal: **${quote.symbol}** ${formatPrice(quote.price)}${changeText}${headline}. `
+        + 'Hypothetical — not financial advice.';
+}
+
+/**
+ * Buttons under the signal card: start a live tracker on the flagged coin.
+ * Discord caps custom_id at 100 chars — with an unusually long coin id the
+ * button would be rejected, so the card falls back to no buttons instead.
+ */
+export function buildSignalButtons(query, stakeAmount) {
+    const customId = `${TRADE_BUTTON_IDS.TRACK}:${query}:${stakeAmount}`;
+
+    if (customId.length > 100) {
+        return [];
+    }
+
+    const row = new ActionRowBuilder();
+
+    row.addComponents(
+        new ButtonBuilder()
+            .setCustomId(customId)
+            .setLabel('Track this coin live')
+            .setStyle(ButtonStyle.Primary),
+    );
+
+    return [row];
+}
+
+/**
+ * The what-if ladder card (subcommand `simulate`).
+ *
+ * @param {object} input
+ * @param {object} input.quote      Normalized quote.
+ * @param {number} input.amount     Hypothetical USD invested at the current price.
+ * @param {object[]} input.scenarios Result of buildSimulationScenarios().
+ * @param {object|null} [input.whatIf] 24h-ago what-if, when computable.
+ */
+export function buildSimulateEmbed({ quote, amount, scenarios, whatIf = null }) {
+    const direction = directionOf(quote.change24h);
+
+    const embed = createEmbed({
+        title: `What-If Ladder · ${displayName(quote.name)} · ${quote.symbol}`,
+        description: `\`\`\`\n${buildHeaderBlock(quote)}\n\`\`\``,
+        color: colorFor(direction),
+        url: quote.pairUrl || null,
+        thumbnail: quote.image || null,
+        timestamp: true,
+    });
+
+    const units = amount / quote.price;
+
+    embed.addFields({
+        name: 'Position modelled',
+        value: `\`\`\`\n${buildAlignedRows([
+            ['Invested', formatPrice(amount)],
+            ['Entry (now)', formatPrice(quote.price)],
+            [`${quote.symbol || 'Tokens'} held`, formatUnits(units)],
+        ])}\n\`\`\``,
+        inline: false,
+    });
+
+    embed.addFields({
+        name: 'If the price moves, you would have',
+        value: scenarioTable(scenarios).slice(0, 900)
+            + '\n*Exact arithmetic (stake × multiple). Real fills lose value to fees, slippage and token taxes.*',
+        inline: false,
+    });
+
+    if (whatIf) {
+        const outcome = whatIf.isProfit ? 'would be up' : whatIf.breakEven ? 'would have broken even' : 'would be down';
+        embed.addFields({
+            name: 'Context: bought 24h ago instead',
+            value: `${formatPrice(amount)} ${outcome} **${formatSignedMoney(whatIf.profitLoss)}** `
+                + `(${formatPercent(whatIf.profitLossPercent)}) — worth ${formatPrice(whatIf.currentValue)} now.`,
+            inline: false,
+        });
+    }
+
+    embed.addFields({
+        name: 'Source',
+        value: `${SOURCE_LABELS[quote.source] || 'Market data'}\n`
+            + '*Hypothetical simulator — the bot never trades, holds, or moves funds.*'.slice(0, 1024),
+        inline: false,
+    });
+
+    return embed;
+}
+
+/** The freshly-boosted tokens board (subcommand `trending`). */
+export function buildTrendingEmbed(trending) {
+    const embed = createEmbed({
+        title: 'Fresh Memecoin Boosts · DexScreener',
+        description: `Top-boosted on-chain tokens right now — most are **not listed** on any exchange or tracker yet. `
+            + `Hydrated ${trending.entries.length} of ${trending.scanned} boosted tokens with live prices.`,
+        color: getColor('primary', '#5865F2'),
+        timestamp: true,
+    });
+
+    embed.addFields({
+        name: 'Boosted tokens',
+        value: trending.entries.length
+            ? trending.entries.map((entry, index) => {
+                const quote = entry.quote;
+                const changeText = toNumber(quote.change24h) === null
+                    ? '—'
+                    : `${arrowFor(quote.change24h)} ${formatPercent(quote.change24h)}`;
+                const liquidityText = toNumber(quote.liquidity) === null
+                    ? ''
+                    : ` · Liq ${formatCompact(quote.liquidity)}`;
+                return `**${index + 1}. [${quote.symbol}](${entry.url})**${entry.chain ? ` · ${entry.chain}` : ''} · `
+                    + `${formatPrice(quote.price)} · ${changeText} 24h\n`
+                    + `Vol ${formatCompact(quote.volume24h)}${liquidityText} · Risk: ${entry.risk}`;
+            }).join('\n\n').slice(0, 1024)
+            : 'No boosted tokens passed the liquidity filter right now.',
+        inline: false,
+    });
+
+    embed.addFields({
+        name: 'Read this first',
+        value: 'Boosted tokens pay for visibility — boosting says nothing about legitimacy. '
+            + 'Rugs, honeypots and zero-liquidity exits are common at this stage. '
+            + 'Verify the contract and holders before touching one. '
+            + '**This is a research feed, not financial advice.**',
+        inline: false,
+    });
+
+    return embed;
+}
+
+/** Confirmation card for /trade watch add. */
+export function buildWatchAddEmbed({ quote, alert }) {
+    const distance = ((alert.targetPrice - quote.price) / quote.price) * 100;
+
+    return createEmbed({
+        title: `Price Alert Set · ${alert.symbol}`,
+        description: `I will ping you here when **${alert.symbol}** trades `
+            + `${alert.direction} **${formatPrice(alert.targetPrice)}**.`,
+        color: getColor('primary', '#5865F2'),
+        fields: [
+            { name: 'Current price', value: formatPrice(quote.price), inline: true },
+            { name: 'Target', value: `${alert.direction === 'above' ? '▲' : '▼'} ${formatPrice(alert.targetPrice)}`, inline: true },
+            { name: 'Distance', value: formatPercent(distance), inline: true },
+            { name: 'Note', value: '*One-shot alert: it fires once, then removes itself.*', inline: false },
+        ],
+        thumbnail: quote.image || null,
+        timestamp: true,
+    });
+}
+
+/** List of a user's active alerts (/trade watch list). */
+export function buildWatchListEmbed(userAlerts) {
+    if (!userAlerts.length) {
+        return createEmbed({
+            title: 'Price Alerts',
+            description: 'You have no active alerts. Set one with `/trade watch add`.',
+            color: getColor('primary', '#5865F2'),
+            timestamp: true,
+        });
+    }
+
+    const lines = userAlerts.map((alert) => `**${alert.symbol}** · ${alert.direction} `
+        + `${formatPrice(alert.targetPrice)} · set ${discordRelative(alert.createdAt)}`);
+
+    return createEmbed({
+        title: `Price Alerts (${userAlerts.length})`,
+        description: lines.join('\n').slice(0, 4096),
+        color: getColor('primary', '#5865F2'),
+        timestamp: true,
+    });
+}
+
 export const __testables = {
     buildHeaderBlock,
     buildChartBlock,
     buildStatFields,
     buildPositionField,
     buildWhatIfField,
+    scenarioTable,
     discordRelative,
 };
