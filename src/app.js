@@ -20,6 +20,7 @@ import { runSafeTask, handleTaskError, ErrorCodes } from './utils/errorHandler.j
 import { getAiConfigStatus, maskApiKey } from './services/ticketAI/aiSupportService.js';
 import { initializeMusic } from './services/music/riffySetup.js';
 import { shutdownMusic } from './services/music/playerHandler.js';
+import { stopAllSessions } from './services/trading/tradeSessionManager.js';
 import { EXPECTED_SCHEMA_VERSION, EXPECTED_SCHEMA_LABEL } from './config/database/schemaVersion.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -386,6 +387,10 @@ class TitanBot extends Client {
       logger.info('Stopping music players...');
       await shutdownMusic(this);
       logger.info('✅ Music players stopped');
+
+      logger.info('Stopping live trade trackers...');
+      const stoppedTrackers = await stopAllSessions('shutdown');
+      logger.info(`✅ Live trade trackers stopped (${stoppedTrackers})`);
 
       if (this.webServer) {
         logger.info('Closing web server...');
