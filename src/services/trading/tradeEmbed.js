@@ -29,6 +29,7 @@ import {
     toNumber,
 } from '../../utils/tradeFormat.js';
 import { MARKET_SOURCES } from './marketDataService.js';
+import { scoreMemeCoin } from './memeScanner.js';
 
 // Resolved from botConfig.embeds.colors so the card follows the bot's theme
 // instead of hardcoding hex. getColor() falls back to the literal if the config
@@ -244,6 +245,16 @@ export function buildTradeEmbed({
     });
 
     embed.addFields(buildStatFields(quote));
+
+    const setup = scoreMemeCoin(quote);
+    const positives = setup.reasons.length ? setup.reasons.join('; ') : 'no confirmed momentum alignment';
+    const flags = setup.warnings.length ? setup.warnings.join('; ') : 'no extra flags from available data';
+    embed.addFields({
+        name: `Market setup · ${setup.score}/100 · ${setup.risk} risk`,
+        value: `**Signals:** ${positives}.\n**Watch-outs:** ${flags}.\n`
+            + '*A setup score ranks current statistics; it is not a prediction or buy recommendation.*',
+        inline: false,
+    });
 
     const positionField = buildPositionField(position, quote);
     if (positionField) {

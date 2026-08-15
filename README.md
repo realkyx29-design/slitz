@@ -96,6 +96,33 @@ TitanBot offers a complete suite of tools for Discord server management and comm
 </tr>
 </table>
 
+<a name="memecoin-radar"></a>
+## Memecoin Market Radar
+
+`/trade` is a read-only market research tool. It never connects to wallets or
+exchanges and cannot place orders.
+
+- Choose **Market scan** to scan up to 250 coins in CoinGecko's memecoin category.
+  The radar separates fast 24-hour movers from more balanced setups and scores
+  momentum, market depth, trading activity, volatility, and missing data.
+- Choose **Coin tracker** (or omit `mode` for backward compatibility) and provide a
+  ticker, name, EVM address, or Solana address. The card includes live refreshes,
+  a 7-day chart when available, risk flags, and optional hypothetical P/L.
+- Setup scores explain current statistics only. They are not forecasts or buy
+  recommendations. Users should independently verify contracts, holder
+  concentration, liquidity locks, taxes, and audits.
+
+Examples:
+
+```
+/trade mode:Market scan
+/trade coin:BONK amount:100 entry:0.00002
+/trade mode:Coin tracker coin:<contract address> live:true
+```
+
+CoinGecko and DexScreener work without API keys. Scan results are cached for one
+minute and per-user rate limits protect public API quotas.
+
 <a name="honeypot"></a>
 ## Honeypot (Spam Bot Trap)
 
