@@ -18,6 +18,8 @@ import {
 } from '../../services/trading/positionCalculator.js';
 import { buildAlertContent, buildTradeButtons, buildTradeEmbed } from '../../services/trading/tradeEmbed.js';
 import { analyzeMarket, isAnalystEnabled } from '../../services/trading/tradeAnalyst.js';
+import { scanMemeMarket } from '../../services/trading/memeScanner.js';
+import { buildMemeScanEmbed } from '../../services/trading/memeScanEmbed.js';
 import {
     clampDuration,
     clampInterval,
@@ -42,12 +44,21 @@ export function resolveNotifyUserId(env = process.env) {
 export default {
     data: new SlashCommandBuilder()
         .setName('trade')
-        .setDescription('Track a memecoin live and model profit or loss on an investment')
+        .setDescription('Scan memecoins or open a live, read-only market tracker')
+        .addStringOption((option) =>
+            option
+                .setName('mode')
+                .setDescription('Scan the market or inspect one coin (default: coin)')
+                .addChoices(
+                    { name: 'Market scan — find momentum and risk', value: 'scan' },
+                    { name: 'Coin tracker — inspect one token', value: 'coin' },
+                )
+                .setRequired(false))
         .addStringOption((option) =>
             option
                 .setName('coin')
-                .setDescription('Ticker, name, or contract address (e.g. BONK, dogwifhat, 0x...)')
-                .setRequired(true)
+                .setDescription('Ticker, name, or contract address (required in coin mode)')
+                .setRequired(false)
                 .setMaxLength(100))
         .addNumberOption((option) =>
             option
@@ -98,13 +109,43 @@ export default {
             return;
         }
 
+        const mode = interaction.options.getString('mode') || 'coin';
+
+        if (mode === 'scan') {
+            const allowed = await checkRateLimit(`trade_scan:${interaction.user.id}`, 3, 60_000);
+            if (!allowed) {
+                await replyUserError(interaction, {
+                    type: ErrorTypes.RATE_LIMIT,
+                    message: 'The market radar was refreshed recently. Wait a moment and try again.',
+                });
+                return;
+            }
+
+            try {
+                const scan = await scanMemeMarket();
+                await InteractionHelper.safeEditReply(interaction, {
+                    embeds: [buildMemeScanEmbed(scan)],
+                    allowedMentions: { parse: [] },
+                });
+            } catch (error) {
+                logger.warn('trade: market scan failed', { error: error.message, code: error.code });
+                await replyUserError(interaction, {
+                    type: ErrorTypes.NETWORK,
+                    message: error.code === 'rate_limited'
+                        ? 'The market data provider is rate limiting scans. Try again in a minute.'
+                        : 'The memecoin radar could not load market data. Please try again shortly.',
+                });
+            }
+            return;
+        }
+
         const rawCoin = interaction.options.getString('coin');
         const coin = normalizeQuery(rawCoin);
 
         if (!coin) {
             await replyUserError(interaction, {
                 type: ErrorTypes.USER_INPUT,
-                message: 'Please provide a coin ticker, name, or contract address.',
+                message: 'Coin mode needs a ticker, token name, or contract address. Or choose `mode: Market scan`.',
             });
             return;
         }
