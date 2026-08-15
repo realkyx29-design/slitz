@@ -476,3 +476,34 @@ export async function getQuote(query, { force = false } = {}) {
 
     return { ...quote, cached: false };
 }
+
+const DEXSCREENER_ROOT = process.env.DEXSCREENER_API_ROOT || 'https://api.dexscreener.com';
+
+/**
+ * Fetch the currently top-boosted tokens from DexScreener.
+ *
+ * Boosts are how brand-new on-chain memecoins buy visibility before any
+ * listing tracker knows they exist, so this is the best free window into
+ * "what is hot right now". The endpoint is public and needs no key.
+ *
+ * @returns {Promise<Array<{chainId: string, tokenAddress: string, amount: number, description?: string, links?: Array}>>}
+ * @throws {MarketDataError} on network/rate-limit/upstream failures.
+ */
+export async function fetchTopBoostedTokens() {
+    const data = await fetchJson(`${DEXSCREENER_ROOT}/token-boosts/top/v1`);
+
+    if (!Array.isArray(data)) {
+        throw new MarketDataError('Unexpected boosted-tokens payload.', { code: 'upstream_error', retryable: true });
+    }
+
+    return data
+        .filter((entry) => entry && entry.chainId && entry.tokenAddress)
+        .map((entry) => ({
+            chainId: String(entry.chainId),
+            tokenAddress: String(entry.tokenAddress),
+            amount: toNumber(entry.amount) ?? 0,
+            totalAmount: toNumber(entry.totalAmount) ?? 0,
+            description: typeof entry.description === 'string' ? entry.description.slice(0, 200) : null,
+            links: Array.isArray(entry.links) ? entry.links : [],
+        }));
+}

@@ -97,31 +97,52 @@ TitanBot offers a complete suite of tools for Discord server management and comm
 </table>
 
 <a name="memecoin-radar"></a>
-## Memecoin Market Radar
+## Memecoin Trading Suite
 
-`/trade` is a read-only market research tool. It never connects to wallets or
-exchanges and cannot place orders.
+`/trade` is a read-only market research suite. It never connects to wallets or
+exchanges and cannot place orders — every number is a hypothetical what-if.
 
-- Choose **Market scan** to scan up to 250 coins in CoinGecko's memecoin category.
-  The radar separates fast 24-hour movers from more balanced setups and scores
-  momentum, market depth, trading activity, volatility, and missing data.
-- Choose **Coin tracker** (or omit `mode` for backward compatibility) and provide a
-  ticker, name, EVM address, or Solana address. The card includes live refreshes,
-  a 7-day chart when available, risk flags, and optional hypothetical P/L.
-- Setup scores explain current statistics only. They are not forecasts or buy
-  recommendations. Users should independently verify contracts, holder
-  concentration, liquidity locks, taxes, and audits.
+Six subcommands:
+
+- **`/trade coin`** — a live-updating market card for one coin (ticker, name, EVM
+  or Solana address). Includes a 7-day chart when available, risk flags, optional
+  hypothetical P/L on an `amount`, and an optional AI read. Auto-refreshes on a
+  timer you control.
+- **`/trade scan`** — scans up to 250 coins in CoinGecko's memecoin category and
+  separates fast 24-hour movers from more balanced setups, scoring momentum,
+  market depth, trading activity, volatility, and data quality.
+- **`/trade signals`** — finds coins whose momentum points up, sizes a
+  hypothetical entry against a budget, projects what that stake would be worth
+  under a few labelled scenarios, and pings the configured user with the result.
+  A button turns the signal into a live tracker.
+- **`/trade simulate`** — the "how much would I get" ladder: shows exactly what a
+  hypothetical stake would be worth at 1.25x through 10x and at an all-time-high
+  retest.
+- **`/trade trending`** — freshly boosted on-chain tokens from DexScreener (the
+  brand-new names not yet listed anywhere), each with a liquidity floor and a risk
+  label.
+- **`/trade watch add|list|remove`** — one-shot price alerts that ping you in the
+  channel you set them when a coin crosses your target.
+
+Setup scores and signals explain current statistics only. They are not forecasts
+or buy recommendations. Users should independently verify contracts, holder
+concentration, liquidity locks, taxes, and audits.
 
 Examples:
 
 ```
-/trade mode:Market scan
-/trade coin:BONK amount:100 entry:0.00002
-/trade mode:Coin tracker coin:<contract address> live:true
+/trade scan
+/trade coin coin:BONK amount:100 entry:0.00002
+/trade signals budget:200
+/trade simulate coin:BONK amount:100
+/trade trending
+/trade watch add coin:BONK price:0.00003 direction:Above the target
 ```
 
-CoinGecko and DexScreener work without API keys. Scan results are cached for one
-minute and per-user rate limits protect public API quotas.
+CoinGecko and DexScreener work without API keys. Scan and trending results are
+cached for one minute, and per-user rate limits protect public API quotas. The
+signal budget defaults to `$100` and is set with `TRADE_SIGNAL_BUDGET`; the user
+pinged by signals defaults to the operator ID and is set with `TRADE_NOTIFY_USER_ID`.
 
 <a name="honeypot"></a>
 ## Honeypot (Spam Bot Trap)

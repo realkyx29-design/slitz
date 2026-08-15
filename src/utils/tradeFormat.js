@@ -295,10 +295,24 @@ export function buildAlignedRows(rows, { gap = 2 } = {}) {
         return '';
     }
 
-    const labelWidth = Math.max(...usable.map(([label]) => String(label).length));
+    // Pad every column except the last so any row width aligns. Two-column
+    // input behaves exactly as before.
+    const columnCount = Math.max(...usable.map((row) => row.length));
+    const widths = [];
+
+    for (let column = 0; column < columnCount - 1; column += 1) {
+        widths.push(Math.max(...usable.map((row) => String(row[column] ?? '').length)));
+    }
 
     return usable
-        .map(([label, value]) => `${padTo(label, labelWidth + gap)}${value}`)
+        .map((row) => row
+            .map((cell, column) => {
+                const text = String(cell ?? '');
+                return column === columnCount - 1
+                    ? text
+                    : padTo(text, widths[column] + gap);
+            })
+            .join(''))
         .join('\n');
 }
 
